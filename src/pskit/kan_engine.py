@@ -105,6 +105,7 @@ class PSKitKANEngine:
         return round(max(0.0, min(1.0, score)), 4)
 
     async def score_command(self, command: str) -> float:
+        self._command_count += 1
         features = self.extract_features(command)
         return self._heuristic_score(features)
 
