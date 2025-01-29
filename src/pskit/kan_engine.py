@@ -102,10 +102,9 @@ class PSKitKANEngine:
         ]
         for f, w in zip(features, weights):
             score += f * w
-        return round(max(0.0, min(1.0, score)), 4)
+        return max(0.0, min(1.0, score))
 
     async def score_command(self, command: str) -> float:
-        self._command_count += 1
         features = self.extract_features(command)
         return self._heuristic_score(features)
 
