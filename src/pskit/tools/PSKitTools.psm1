@@ -52,14 +52,14 @@ function Search-PSKitCode {
     if ($rgCmd) {
         $raw = rg --json $Pattern $Path --glob $Include 2>$null |
                Where-Object { $_ -match '"type":"match"' } |
-               Select-Object -First $MaxResults
+               Select-Object -First $MaxResults -ErrorAction SilentlyContinue
         $results = $raw | ForEach-Object {
             $obj = $_ | ConvertFrom-Json
             @{ file = $obj.data.path.text; line_number = $obj.data.line_number; text = $obj.data.lines.text.Trim() }
         }
     } else {
         $results = Get-ChildItem -Path $Path -Recurse -Include $Include -File |
-            Select-String -Pattern $Pattern | Select-Object -First $MaxResults |
+            Select-String -Pattern $Pattern | Select-Object -First $MaxResults -ErrorAction SilentlyContinue |
             ForEach-Object { @{ file = $_.Path; line_number = $_.LineNumber; text = $_.Line.Trim() } }
     }
     $results | ConvertTo-Json -Compress
@@ -74,14 +74,14 @@ function Find-PSKitFiles {
     )
     $rgCmd = Get-Command rg -ErrorAction SilentlyContinue
     if ($rgCmd) {
-        $files = rg --files $Path --glob $Pattern 2>$null | Select-Object -First $MaxResults
+        $files = rg --files $Path --glob $Pattern 2>$null | Select-Object -First $MaxResults -ErrorAction SilentlyContinue
         $results = $files | ForEach-Object {
             $item = Get-Item $_
             @{ name = $item.Name; path = $item.FullName; size_bytes = $item.Length; modified = $item.LastWriteTime.ToString("o") }
         }
     } else {
         $results = Get-ChildItem -Path $Path -Recurse -Include $Pattern -File |
-            Select-Object -First $MaxResults |
+            Select-Object -First $MaxResults -ErrorAction SilentlyContinue |
             ForEach-Object { @{ name = $_.Name; path = $_.FullName; size_bytes = $_.Length; modified = $_.LastWriteTime.ToString("o") } }
     }
     $results | ConvertTo-Json -Compress
