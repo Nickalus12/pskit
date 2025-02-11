@@ -142,4 +142,5 @@ class PSKitManager:
         self._sessions.clear()
 
     async def get_pool(self, pool_size: int = 3) -> Any:
+        # pool implementation coming
         return None
