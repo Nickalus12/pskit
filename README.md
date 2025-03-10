@@ -41,3 +41,11 @@ pip install pskit
 ## License
 
 MIT © 2025 Nickalus Brewer
+
+## Safety Pipeline
+
+Every command passes through 5 tiers before execution:
+
+```
+Command -> Cache -> KAN Neural -> Blocklist -> Path Check -> Gemma LLM -> Execute
+```
