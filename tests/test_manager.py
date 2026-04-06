@@ -262,3 +262,77 @@ def test_manager_pool_none_on_init():
     from pskit.manager import PSKitManager
     manager = PSKitManager()
     assert manager._pool is None
+
+
+# ── Config tests ───────────────────────────────────────────────────────────────
+
+
+def test_config_defaults():
+    from pskit.config import PSKitConfig
+    from pathlib import Path
+    cfg = PSKitConfig(project_root=Path("."))
+    assert cfg.pool_size == 3
+    assert cfg.audit_enabled is True
+    assert cfg.safety_model == "gemma4:e2b"
+    assert isinstance(cfg.extra_blocklist, list)
+
+
+def test_config_env_override(monkeypatch, tmp_path):
+    monkeypatch.setenv("PSKIT_POOL_SIZE", "5")
+    monkeypatch.setenv("PSKIT_SAFETY_MODEL", "gemma3:4b")
+    from pskit.config import PSKitConfig
+    cfg = PSKitConfig(project_root=tmp_path)
+    assert cfg.pool_size == 5
+    assert cfg.safety_model == "gemma3:4b"
+
+
+def test_config_as_dict():
+    from pskit.config import PSKitConfig
+    from pathlib import Path
+    cfg = PSKitConfig(project_root=Path("."))
+    d = cfg.as_dict()
+    assert "allowed_root" in d
+    assert "pool_size" in d
+    assert "audit_enabled" in d
+
+
+# ── Audit tests ────────────────────────────────────────────────────────────────
+
+
+def test_audit_record_and_tail(tmp_path):
+    from pskit.audit import PSKitAudit
+    audit = PSKitAudit(project_root=tmp_path)
+    audit.record("Get-ChildItem", "s1", "safe", 0.05, True, 12)
+    audit.record("Invoke-Expression $x", "s1", "blocked", 0.92, False, 8, "blocked by policy")
+    entries = audit.tail(10)
+    assert len(entries) == 2
+    assert entries[0]["verdict"] == "safe"
+    assert entries[1]["verdict"] == "blocked"
+
+
+def test_audit_stats(tmp_path):
+    from pskit.audit import PSKitAudit
+    audit = PSKitAudit(project_root=tmp_path)
+    for i in range(5):
+        audit.record(f"cmd_{i}", "s1", "safe", 0.1, True, 10)
+    audit.record("bad", "s1", "blocked", 0.9, False, 5)
+    stats = audit.stats()
+    assert stats["total"] == 6
+    assert stats["blocked"] == 1
+    assert stats["failed"] == 1
+
+
+def test_audit_empty_stats(tmp_path):
+    from pskit.audit import PSKitAudit
+    audit = PSKitAudit(project_root=tmp_path)
+    stats = audit.stats()
+    assert stats["total"] == 0
+
+
+def test_audit_gitignore_created(tmp_path):
+    from pskit.audit import PSKitAudit
+    audit = PSKitAudit(project_root=tmp_path)
+    audit.record("Get-Date", "s1", "safe", 0.0, True, 1)
+    gi = tmp_path / ".pskit" / ".gitignore"
+    assert gi.exists()
+    assert "audit.jsonl" in gi.read_text()
