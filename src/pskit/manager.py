@@ -416,13 +416,11 @@ class PSKitManager:
         self,
         project_root: str | Path | None = None,
         local_engine: Any = None,
-        memory_engine: Any = None,
-        kan_engine: PSKitKANEngine | None = None,
+            kan_engine: PSKitKANEngine | None = None,
     ) -> None:
         self._project_root = Path(project_root) if project_root else Path.cwd()
         self._local_engine = local_engine
-        self._memory = memory_engine
-        self._kan = kan_engine or PSKitKANEngine(memory_engine=memory_engine)
+        self._kan = kan_engine or PSKitKANEngine()
         self._sessions: dict[str, dict] = {}
         self._custom_tools: dict[str, str] = {}
         self._dangerous_commands = _DANGEROUS_COMMANDS
