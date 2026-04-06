@@ -41,10 +41,10 @@ def _serve_http(port: int = 8000) -> None:
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from starlette.applications import Starlette
     from starlette.routing import Mount
 
-    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from pskit.server import mcp as _mcp_server
 
     # Access the underlying low-level server

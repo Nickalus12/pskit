@@ -2,8 +2,9 @@
 
 import json as _json
 import time as _time
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, AsyncIterator, TypedDict
+from typing import Any, TypedDict
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
@@ -456,10 +457,14 @@ async def git_log(limit: int = 20, path: str = "", since: str = "",
         author: Filter by author name substring.
     """
     flags = f" -Limit {limit}"
-    if path:   flags += f" -Path '{path}'"
-    if since:  flags += f" -Since '{since}'"
-    if until:  flags += f" -Until '{until}'"
-    if author: flags += f" -Author '{author}'"
+    if path:
+        flags += f" -Path '{path}'"
+    if since:
+        flags += f" -Since '{since}'"
+    if until:
+        flags += f" -Until '{until}'"
+    if author:
+        flags += f" -Author '{author}'"
     result = await _require().execute(f"Get-PSKitGitLog{flags}")
     return _parse(result)  # type: ignore[return-value]
 

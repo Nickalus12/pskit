@@ -85,7 +85,6 @@ try:
     import torch
     import torch.nn.functional as F
     import torch.optim as optim
-
     from loom.powershell_tools.kan import KAN
 
     _TORCH_AVAILABLE = True

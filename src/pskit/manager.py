@@ -7,7 +7,7 @@ import re
 import struct
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -555,7 +555,7 @@ class PSKitManager:
                 results[i] = await self.execute(script, session_id, timeout)
 
         session["command_count"] += len(approved_indices)
-        session["last_command"] = datetime.now(timezone.utc)
+        session["last_command"] = datetime.now(UTC)
         return [r or {} for r in results]
 
     async def _safety_check_only(self, script: str, session_id: str) -> dict | None:

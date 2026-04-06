@@ -1,9 +1,9 @@
 """PSKit audit log — append-only JSONL at .pskit/audit.jsonl."""
 from __future__ import annotations
 
+import datetime as _dt
 import json
 import threading
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +35,7 @@ class PSKitAudit:
         error: str = "",
     ) -> None:
         entry = {
-            "ts": datetime.now(timezone.utc).isoformat(),
+            "ts": _dt.datetime.now(_dt.UTC).isoformat(),
             "cmd": command[:500],
             "session": session_id,
             "verdict": safety_verdict,

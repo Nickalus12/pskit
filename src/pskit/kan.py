@@ -26,7 +26,7 @@ class KANLinear(torch.nn.Module):
         grid_eps: float = 0.02,
         grid_range: list[float] = [-1, 1],
     ):
-        super(KANLinear, self).__init__()
+        super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.grid_size = grid_size
@@ -156,7 +156,7 @@ class KAN(torch.nn.Module):
         grid_eps: float = 0.02,
         grid_range: list[float] = [-1, 1],
     ):
-        super(KAN, self).__init__()
+        super().__init__()
         self.grid_size = grid_size
         self.spline_order = spline_order
         self.layers = torch.nn.ModuleList()
