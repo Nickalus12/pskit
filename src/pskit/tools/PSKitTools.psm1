@@ -53,14 +53,15 @@ function Search-PSKitCode {
         [string]$Pattern,
         [string]$Path = ".",
         [string]$Include = "*.*",
-        [int]$MaxResults = 50
+        [int]$MaxResults = 50,
+        [int]$Context = 0
     )
 
     $rgCmd = Get-Command rg -ErrorAction SilentlyContinue
     if ($rgCmd) {
-        # ripgrep: fast indexed search, respects .gitignore
         $globs = if ($Include -and $Include -ne "*.*") { @("--glob", $Include) } else { @() }
-        $raw = & rg --json @globs -- $Pattern $Path 2>$null |
+        $ctxArgs = if ($Context -gt 0) { @("-C", $Context) } else { @() }
+        $raw = & rg --json @ctxArgs @globs -- $Pattern $Path 2>$null |
             Where-Object { $_ } |
             ForEach-Object { try { $_ | ConvertFrom-Json } catch { $null } } |
             Where-Object { $_ -and $_.type -eq "match" } |
@@ -70,7 +71,6 @@ function Search-PSKitCode {
         })
         @{ success = $true; pattern = $Pattern; count = $results.Count; matches = $results; engine = "rg" } | ConvertTo-Json -Compress -Depth 3
     } else {
-        # Fallback: Select-String (no index, full tree walk)
         $results = @(Get-ChildItem -Path $Path -Recurse -File -Include $Include -ErrorAction SilentlyContinue |
             Select-String -Pattern $Pattern -ErrorAction SilentlyContinue |
             Select-Object -First $MaxResults |
@@ -152,9 +152,20 @@ function New-PSKitGitCommit {
 
 function Get-PSKitGitLog {
     [CmdletBinding()]
-    param([int]$Limit = 20)
-    $log = git log --oneline -n $Limit --format="%H|%h|%s|%an|%ai" 2>&1
-    $entries = $log -split "`n" | Where-Object { $_ } | ForEach-Object {
+    param(
+        [int]$Limit = 20,
+        [string]$Path = "",
+        [string]$Since = "",
+        [string]$Until = "",
+        [string]$Author = ""
+    )
+    $gitArgs = @("log", "--format=%H|%h|%s|%an|%ai", "-n", $Limit)
+    if ($Since)  { $gitArgs += "--since=$Since" }
+    if ($Until)  { $gitArgs += "--until=$Until" }
+    if ($Author) { $gitArgs += "--author=$Author" }
+    if ($Path)   { $gitArgs += "--"; $gitArgs += $Path }
+    $log = & git @gitArgs 2>&1
+    $entries = $log | Where-Object { $_ } | ForEach-Object {
         $parts = $_ -split '\|', 5
         @{ hash = $parts[0]; short = $parts[1]; message = $parts[2]; author = $parts[3]; date = $parts[4] }
     }
@@ -232,33 +243,76 @@ function Get-PSKitMemoryUsage {
 
 function Invoke-PSKitBuild {
     [CmdletBinding()]
-    param([string]$Command)
+    param([string]$Command = "")
     if (-not $Command) {
-        if (Test-Path "package.json") { $Command = "npm run build" }
-        elseif (Test-Path "pyproject.toml") { $Command = "python -m build" }
+        if (Test-Path "package.json")  { $Command = "npm run build" }
         elseif (Test-Path "Cargo.toml") { $Command = "cargo build" }
-        elseif (Test-Path "Makefile") { $Command = "make" }
-        else { return @{ success = $false; error = "No build system detected" } | ConvertTo-Json -Compress }
+        elseif (Test-Path "Makefile")   { $Command = "make" }
+        elseif (Test-Path "pyproject.toml" -or Test-Path "setup.py") { $Command = "python -m build" }
+        else { return @{ success = $false; error = "No build system detected"; command_used = "" } | ConvertTo-Json -Compress }
     }
-    $output = Invoke-Expression $Command 2>&1
-    @{ success = ($LASTEXITCODE -eq 0); command = $Command; output = ($output -join "`n") } | ConvertTo-Json -Compress
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process pwsh -ArgumentList "-NoProfile","-Command",$Command `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+            -Wait -PassThru -NoNewWindow
+        $stdout = if (Test-Path $outFile) { [System.IO.File]::ReadAllText($outFile) } else { "" }
+        $stderr = if (Test-Path $errFile) { [System.IO.File]::ReadAllText($errFile) } else { "" }
+        $exitCode = $proc.ExitCode
+    } catch {
+        $stdout = ""; $stderr = $_.Exception.Message; $exitCode = 1
+    } finally {
+        Remove-Item $outFile,$errFile -ErrorAction SilentlyContinue
+    }
+    $sw.Stop()
+    @{ success = ($exitCode -eq 0); command_used = $Command; exit_code = $exitCode
+       stdout = $stdout.TrimEnd(); stderr = $stderr.TrimEnd(); duration_ms = $sw.ElapsedMilliseconds
+    } | ConvertTo-Json -Compress
 }
 
 function Invoke-PSKitTest {
     [CmdletBinding()]
     param(
-        [string]$Filter,
-        [string]$Command
+        [string]$Filter = "",
+        [string]$Command = ""
     )
     if (-not $Command) {
-        if (Test-Path "pyproject.toml") { $Command = "python -m pytest" }
-        elseif (Test-Path "package.json") { $Command = "npm test" }
-        elseif (Test-Path "Cargo.toml") { $Command = "cargo test" }
-        else { return @{ success = $false; error = "No test framework detected" } | ConvertTo-Json -Compress }
+        if (Test-Path "pyproject.toml" -or Test-Path "pytest.ini") {
+            $Command = if ($Filter) { "python -m pytest -q -k `"$Filter`"" } else { "python -m pytest -q" }
+        } elseif (Test-Path "package.json") {
+            $Command = if ($Filter) { "npm test -- --grep `"$Filter`"" } else { "npm test" }
+        } elseif (Test-Path "Cargo.toml") {
+            $Command = if ($Filter) { "cargo test $Filter" } else { "cargo test" }
+        } else { return @{ success = $false; error = "No test framework detected"; command_used = "" } | ConvertTo-Json -Compress }
     }
-    if ($Filter) { $Command += " -k `"$Filter`"" }
-    $output = Invoke-Expression $Command 2>&1
-    @{ success = ($LASTEXITCODE -eq 0); command = $Command; output = ($output -join "`n") } | ConvertTo-Json -Compress
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process pwsh -ArgumentList "-NoProfile","-Command",$Command `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+            -Wait -PassThru -NoNewWindow
+        $stdout = if (Test-Path $outFile) { [System.IO.File]::ReadAllText($outFile) } else { "" }
+        $stderr = if (Test-Path $errFile) { [System.IO.File]::ReadAllText($errFile) } else { "" }
+        $exitCode = $proc.ExitCode
+    } catch {
+        $stdout = ""; $stderr = $_.Exception.Message; $exitCode = 1
+    } finally {
+        Remove-Item $outFile,$errFile -ErrorAction SilentlyContinue
+    }
+    $sw.Stop()
+    # Parse pytest-style summary
+    $passed = 0; $failed = 0; $skipped = 0
+    $allText = $stdout + $stderr
+    if ($allText -match '(\d+) passed')  { $passed  = [int]$Matches[1] }
+    if ($allText -match '(\d+) failed')  { $failed  = [int]$Matches[1] }
+    if ($allText -match '(\d+) skipped') { $skipped = [int]$Matches[1] }
+    @{ success = ($exitCode -eq 0); command_used = $Command; exit_code = $exitCode
+       passed = $passed; failed = $failed; skipped = $skipped
+       stdout = $stdout.TrimEnd(); stderr = $stderr.TrimEnd(); duration_ms = $sw.ElapsedMilliseconds
+    } | ConvertTo-Json -Compress
 }
 
 # ─── Advanced Tools ─────────────────────────────────────────────
@@ -411,24 +465,244 @@ function Get-PSKitProcessInfo {
 
 # ─── Module Export ──────────────────────────────────────────────
 
+# ─── New File Operations ─────────────────────────────────────────
+
+function Read-PSKitFileRange {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Path,
+        [Parameter(Mandatory)] [int]$StartLine,
+        [Parameter(Mandatory)] [int]$EndLine
+    )
+    if (-not (Test-Path $Path)) {
+        return @{ success = $false; error = "File not found: $Path" } | ConvertTo-Json -Compress
+    }
+    $lines = Get-Content -Path $Path
+    $total = $lines.Count
+    $s = [Math]::Max(0, $StartLine - 1)
+    $e = [Math]::Min($total - 1, $EndLine - 1)
+    $numbered = for ($i = $s; $i -le $e; $i++) {
+        "{0,5}| {1}" -f ($i + 1), $lines[$i]
+    }
+    @{ success = $true; path = (Resolve-Path $Path).Path; start_line = $StartLine; end_line = $EndLine; line_count = $total; content = ($numbered -join "`n") } | ConvertTo-Json -Compress
+}
+
+function Move-PSKitFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Source,
+        [Parameter(Mandatory, Position = 1)] [string]$Destination
+    )
+    if (-not (Test-Path $Source)) {
+        return @{ success = $false; error = "Source not found: $Source" } | ConvertTo-Json -Compress
+    }
+    $destParent = Split-Path -Path $Destination -Parent
+    if ($destParent -and -not (Test-Path $destParent)) { New-Item -ItemType Directory -Path $destParent -Force | Out-Null }
+    Move-Item -Path $Source -Destination $Destination -Force
+    @{ success = $true; source = $Source; destination = (Resolve-Path $Destination).Path } | ConvertTo-Json -Compress
+}
+
+function Remove-PSKitFile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Path,
+        [switch]$Recurse
+    )
+    if (-not (Test-Path $Path)) {
+        return @{ success = $false; error = "Path not found: $Path" } | ConvertTo-Json -Compress
+    }
+    Remove-Item -Path $Path -Recurse:$Recurse -Force
+    @{ success = $true; path = $Path } | ConvertTo-Json -Compress
+}
+
+function New-PSKitDirectory {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)] [string]$Path)
+    New-Item -ItemType Directory -Path $Path -Force | Out-Null
+    @{ success = $true; path = (Resolve-Path $Path).Path } | ConvertTo-Json -Compress
+}
+
+function Get-PSKitDirectoryListing {
+    [CmdletBinding()]
+    param(
+        [Parameter(Position = 0)] [string]$Path = ".",
+        [switch]$Recurse
+    )
+    $items = @(Get-ChildItem -Path $Path -Recurse:$Recurse -ErrorAction SilentlyContinue |
+        Select-Object -First 200 |
+        ForEach-Object {
+            @{ name = $_.Name; path = $_.FullName; type = if ($_.PSIsContainer) { "directory" } else { "file" }
+               size_bytes = if ($_.PSIsContainer) { 0 } else { $_.Length }; modified = $_.LastWriteTime.ToString("o") }
+        })
+    @{ success = $true; path = (Resolve-Path $Path).Path; count = $items.Count; items = $items } | ConvertTo-Json -Compress -Depth 4
+}
+
+function Compare-PSKitFiles {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Path1,
+        [Parameter(Mandatory, Position = 1)] [string]$Path2
+    )
+    foreach ($p in @($Path1, $Path2)) {
+        if (-not (Test-Path $p)) { return @{ success = $false; error = "File not found: $p" } | ConvertTo-Json -Compress }
+    }
+    $diff = git diff --no-index -- $Path1 $Path2 2>&1
+    @{ success = $true; path1 = $Path1; path2 = $Path2; identical = ($LASTEXITCODE -eq 0); diff = ($diff -join "`n") } | ConvertTo-Json -Compress
+}
+
+function Invoke-PSKitCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Script,
+        [int]$TimeoutSec = 30
+    )
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
+    try {
+        $proc = Start-Process pwsh -ArgumentList "-NoProfile","-Command",$Script `
+            -RedirectStandardOutput $outFile -RedirectStandardError $errFile `
+            -Wait -PassThru -NoNewWindow
+        $stdout = if (Test-Path $outFile) { [System.IO.File]::ReadAllText($outFile) } else { "" }
+        $stderr = if (Test-Path $errFile) { [System.IO.File]::ReadAllText($errFile) } else { "" }
+        $exitCode = $proc.ExitCode
+    } catch {
+        $stdout = ""; $stderr = $_.Exception.Message; $exitCode = 1
+    } finally {
+        Remove-Item $outFile,$errFile -ErrorAction SilentlyContinue
+    }
+    $sw.Stop()
+    @{ success = ($exitCode -eq 0); exit_code = $exitCode; output = $stdout.TrimEnd()
+       stderr = $stderr.TrimEnd(); duration_ms = $sw.ElapsedMilliseconds } | ConvertTo-Json -Compress
+}
+
+function Get-PSKitEnvVars {
+    [CmdletBinding()]
+    param([string]$Filter = "")
+    $vars = [System.Environment]::GetEnvironmentVariables()
+    $result = [ordered]@{}
+    foreach ($key in ($vars.Keys | Sort-Object)) {
+        if (-not $Filter -or ($key -like "*$Filter*")) { $result[$key] = $vars[$key] }
+    }
+    @{ success = $true; count = $result.Count; vars = $result } | ConvertTo-Json -Compress -Depth 3
+}
+
+function Get-PSKitWhich {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)] [string]$Name)
+    $cmd = Get-Command $Name -ErrorAction SilentlyContinue
+    if ($cmd) {
+        $ver = try { (& $Name --version 2>&1 | Select-Object -First 1) } catch { "" }
+        @{ found = $true; name = $Name; path = $cmd.Source; version = "$ver" } | ConvertTo-Json -Compress
+    } else {
+        @{ found = $false; name = $Name; path = $null; version = $null } | ConvertTo-Json -Compress
+    }
+}
+
+function Install-PSKitPackage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Name,
+        [string]$Manager = "",
+        [string]$Version = ""
+    )
+    $pkg = if ($Version) { "$Name==$Version" } else { $Name }
+    if (-not $Manager) {
+        if     (Get-Command pip   -EA SilentlyContinue) { $Manager = "pip" }
+        elseif (Get-Command npm   -EA SilentlyContinue) { $Manager = "npm" }
+        elseif (Get-Command cargo -EA SilentlyContinue) { $Manager = "cargo" }
+        else   { return @{ success = $false; error = "No package manager found on PATH" } | ConvertTo-Json -Compress }
+    }
+    $cmd = switch ($Manager.ToLower()) {
+        "pip"    { "pip install $pkg" }
+        "npm"    { "npm install $Name" }
+        "cargo"  { "cargo add $Name" }
+        "winget" { "winget install $Name" }
+        default  { return @{ success = $false; error = "Unknown manager: $Manager" } | ConvertTo-Json -Compress }
+    }
+    $output = Invoke-Expression $cmd 2>&1
+    @{ success = ($LASTEXITCODE -eq 0); manager = $Manager; package = $Name; command = $cmd; output = ($output -join "`n") } | ConvertTo-Json -Compress
+}
+
+# ─── New Git Operations ──────────────────────────────────────────
+
+function New-PSKitGitBranch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Name,
+        [switch]$Switch
+    )
+    if ($Switch) { $out = git checkout -b $Name 2>&1 }
+    else         { $out = git branch $Name 2>&1 }
+    @{ success = ($LASTEXITCODE -eq 0); branch = $Name; output = ($out -join "`n") } | ConvertTo-Json -Compress
+}
+
+function Switch-PSKitGitBranch {
+    [CmdletBinding()]
+    param([Parameter(Mandatory, Position = 0)] [string]$Ref)
+    $out = git checkout $Ref 2>&1
+    @{ success = ($LASTEXITCODE -eq 0); ref = $Ref; output = ($out -join "`n") } | ConvertTo-Json -Compress
+}
+
+function Push-PSKitGit {
+    [CmdletBinding()]
+    param(
+        [string]$Remote = "origin",
+        [string]$Branch = ""
+    )
+    if (-not $Branch) { $Branch = git rev-parse --abbrev-ref HEAD 2>$null }
+    $out = git push $Remote $Branch 2>&1
+    @{ success = ($LASTEXITCODE -eq 0); remote = $Remote; branch = $Branch; output = ($out -join "`n") } | ConvertTo-Json -Compress
+}
+
+function Get-PSKitGitBlame {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)] [string]$Path,
+        [int]$StartLine = 0,
+        [int]$EndLine = 0
+    )
+    $rangeArg = if ($StartLine -gt 0 -and $EndLine -gt 0) { @("-L","$StartLine,$EndLine") } else { @() }
+    $raw = & git blame --porcelain @rangeArg -- $Path 2>&1
+    $lines = [System.Collections.Generic.List[hashtable]]::new()
+    $i = 0; $author = ""; $date = ""
+    while ($i -lt $raw.Count) {
+        if ($raw[$i] -match '^([0-9a-f]{40}) \d+ (\d+)') {
+            $hash = $Matches[1]; $lineNum = [int]$Matches[2]
+            $j = $i + 1
+            while ($j -lt $raw.Count -and $raw[$j] -notmatch '^[0-9a-f]{40}') {
+                if ($raw[$j] -match '^author (.+)')      { $author = $Matches[1] }
+                if ($raw[$j] -match '^author-time (\d+)') { $date = [DateTimeOffset]::FromUnixTimeSeconds([long]$Matches[1]).ToString("o") }
+                if ($raw[$j] -match '^\t(.*)') {
+                    $lines.Add(@{ line = $lineNum; hash = $hash.Substring(0,8); author = $author; date = $date; content = $Matches[1] })
+                    break
+                }
+                $j++
+            }
+            $i = $j + 1
+        } else { $i++ }
+    }
+    @($lines) | ConvertTo-Json -Compress -Depth 4
+}
+
 Export-ModuleMember -Function @(
-    'Read-PSKitFile',
-    'Write-PSKitFile',
-    'Search-PSKitCode',
-    'Find-PSKitFiles',
-    'Get-PSKitGitStatus',
-    'Get-PSKitGitDiff',
-    'New-PSKitGitCommit',
-    'Get-PSKitGitLog',
-    'Save-PSKitGitStash',
-    'Restore-PSKitGitStash',
-    'Get-PSKitGpuStatus',
-    'Get-PSKitDiskUsage',
-    'Get-PSKitMemoryUsage',
-    'Invoke-PSKitBuild',
-    'Invoke-PSKitTest',
-    'Edit-PSKitFile',
-    'Get-PSKitPortStatus',
-    'Invoke-PSKitHttpRequest',
-    'Get-PSKitProcessInfo'
+    # File operations
+    'Read-PSKitFile', 'Read-PSKitFileRange',
+    'Write-PSKitFile', 'Edit-PSKitFile',
+    'Move-PSKitFile', 'Remove-PSKitFile',
+    'New-PSKitDirectory', 'Get-PSKitDirectoryListing',
+    'Compare-PSKitFiles', 'Invoke-PSKitCommand',
+    'Search-PSKitCode', 'Find-PSKitFiles',
+    # Environment
+    'Get-PSKitEnvVars', 'Get-PSKitWhich', 'Install-PSKitPackage',
+    # Git
+    'Get-PSKitGitStatus', 'Get-PSKitGitDiff', 'Get-PSKitGitLog',
+    'New-PSKitGitCommit', 'Save-PSKitGitStash', 'Restore-PSKitGitStash',
+    'New-PSKitGitBranch', 'Switch-PSKitGitBranch', 'Push-PSKitGit', 'Get-PSKitGitBlame',
+    # System info
+    'Get-PSKitGpuStatus', 'Get-PSKitDiskUsage', 'Get-PSKitMemoryUsage',
+    # Network & processes
+    'Get-PSKitPortStatus', 'Invoke-PSKitHttpRequest', 'Get-PSKitProcessInfo',
+    # Build & test
+    'Invoke-PSKitBuild', 'Invoke-PSKitTest'
 )
