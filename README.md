@@ -11,7 +11,7 @@ PSKit is a [Model Context Protocol](https://modelcontextprotocol.io) server that
 ## Install
 
 ```bash
-pip install pskit
+pip install pskit-mcp
 ```
 
 ## Tools
