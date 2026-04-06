@@ -1,11 +1,13 @@
 """PSKit CLI entry point.
 
 Usage:
-    pskit              start MCP server (default)
-    pskit serve        start MCP server explicitly
-    pskit doctor       check system dependencies and configuration
-    pskit audit        show recent audit log with stats
-    pskit version      print version and exit
+    pskit                  start MCP server on stdio (default)
+    pskit serve            start MCP server on stdio explicitly
+    pskit serve --http     start MCP server on streamable HTTP (port 8000)
+    pskit serve --port N   use custom HTTP port
+    pskit doctor           check system dependencies and configuration
+    pskit audit            show recent audit log with stats
+    pskit version          print version and exit
 """
 from __future__ import annotations
 
@@ -13,8 +15,53 @@ import sys
 
 
 def _cmd_serve() -> None:
-    from pskit.server import mcp
-    mcp.run()
+    args = sys.argv[2:]  # args after "serve" subcommand
+    if "--http" in args:
+        port = 8000
+        for i, a in enumerate(args):
+            if a in ("--port", "-p") and i + 1 < len(args):
+                try:
+                    port = int(args[i + 1])
+                except ValueError:
+                    pass
+        _serve_http(port)
+    else:
+        from pskit.server import mcp
+        mcp.run()
+
+
+def _serve_http(port: int = 8000) -> None:
+    """Run PSKit as a streamable HTTP MCP server."""
+    try:
+        import uvicorn
+    except ImportError:
+        print("uvicorn is required for HTTP mode: pip install pskit-mcp[http]")
+        sys.exit(1)
+
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    from starlette.applications import Starlette
+    from starlette.routing import Mount
+
+    from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
+    from pskit.server import mcp as _mcp_server
+
+    # Access the underlying low-level server
+    _app = _mcp_server._get_server()  # type: ignore[attr-defined]
+    session_manager = StreamableHTTPSessionManager(app=_app)
+
+    @asynccontextmanager
+    async def lifespan(app: Starlette) -> AsyncIterator[None]:
+        async with session_manager.run():
+            yield
+
+    app = Starlette(
+        routes=[Mount("/mcp", app=session_manager.handle_request)],
+        lifespan=lifespan,
+    )
+    print(f"PSKit MCP server listening on http://0.0.0.0:{port}/mcp")
+    uvicorn.run(app, host="0.0.0.0", port=port)
 
 
 def _cmd_doctor() -> None:
