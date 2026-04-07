@@ -10,7 +10,6 @@ venv/
 *.pyc
 *.pyo
 .env
-kan_model.pt
 *.log
 .DS_Store
 Thumbs.db
