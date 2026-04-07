@@ -420,6 +420,7 @@ class PSKitManager:
     ) -> None:
         self._project_root = Path(project_root) if project_root else Path.cwd()
         self._local_engine = local_engine
+        self._memory = None  # PSKit runs without Graphiti memory
         self._kan = kan_engine or PSKitKANEngine()
         self._sessions: dict[str, dict] = {}
         self._custom_tools: dict[str, str] = {}
