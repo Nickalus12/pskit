@@ -1,15 +1,4 @@
-"""PSKit CLI — neural-safe PowerShell automation for AI agents.
-
-Usage:
-    pskit                  show help (if terminal) or start server (if piped)
-    pskit serve            animated startup + MCP server on stdio
-    pskit serve --http     MCP server on streamable HTTP
-    pskit serve --port N   custom HTTP port
-    pskit doctor           live streaming health check
-    pskit audit            command audit log with KAN score visualization
-    pskit version          print version
-    pskit --help / -h      show help screen
-"""
+"""PSKit CLI — neural-safe PowerShell automation for AI agents."""
 from __future__ import annotations
 
 import sys
@@ -21,7 +10,7 @@ def _is_tty() -> bool:
     return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
 
 
-def _reconfigure(stream) -> None:
+def _fix_encoding(stream) -> None:
     if hasattr(stream, "reconfigure"):
         try:
             stream.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
@@ -29,20 +18,18 @@ def _reconfigure(stream) -> None:
             pass
 
 
-def _console(stderr: bool = False, **kw):
+def _con(stderr: bool = False, **kw):
     from rich.console import Console
-    _reconfigure(sys.stderr if stderr else sys.stdout)
+    _fix_encoding(sys.stderr if stderr else sys.stdout)
     return Console(stderr=stderr, legacy_windows=False, highlight=False, **kw)
 
 
-def _can_unicode(con) -> bool:
+def _can_uni(con) -> bool:
     enc = getattr(con, "encoding", None) or ""
     return enc.lower().startswith("utf")
 
 
-# ── Brand ─────────────────────────────────────────────────────────────────────
-
-_LOGO_UNICODE = r"""
+_LOGO = r"""
   ██████╗ ███████╗██╗  ██╗██╗████████╗
   ██╔══██╗██╔════╝██║ ██╔╝██║╚══██╔══╝
   ██████╔╝███████╗█████╔╝ ██║   ██║
@@ -50,142 +37,72 @@ _LOGO_UNICODE = r"""
   ██║     ███████║██║  ██╗██║   ██║
   ╚═╝     ╚══════╝╚═╝  ╚═╝╚═╝   ╚═╝"""
 
-_LOGO_ASCII = "  PSKit"
-
 
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 def _cmd_help() -> None:
     from pskit import __version__
     import rich.box as box
-    from rich.align import Align
     from rich.columns import Columns
-    from rich.console import Console
     from rich.panel import Panel
     from rich.syntax import Syntax
     from rich.table import Table
     from rich.text import Text
 
-    con = _console()
-    uni = _can_unicode(con)
+    con = _con()
+    uni = _can_uni(con)
 
-    # ── Logo ──────────────────────────────────────────────────────────────────
     con.print()
-    logo = Text(_LOGO_UNICODE if uni else _LOGO_ASCII, style="bold cyan", no_wrap=True)
-    con.print(logo)
+    con.print(Text(_LOGO if uni else "  PSKit", style="bold cyan", no_wrap=True))
     con.print(
-        f"  [bold white]v{__version__}[/bold white]  "
-        "[dim]·[/dim]  "
-        "[dim]Neural-safe PowerShell automation for AI agents[/dim]"
+        f"  [bold white]v{__version__}[/]  [dim]·  Neural-safe PowerShell automation for AI agents[/]"
     )
     con.print()
 
-    # ── Commands ──────────────────────────────────────────────────────────────
+    # Commands
     cmd = Table(show_header=False, box=None, padding=(0, 2), expand=False)
-    cmd.add_column("cmd",    style="bold cyan",  no_wrap=True, width=12)
-    cmd.add_column("desc",                       no_wrap=False)
-    cmd.add_column("hint",   style="dim",        no_wrap=True)
-
-    cmd.add_row("serve",   "Start MCP server on stdio",            "default when piped to a client")
-    cmd.add_row("",        "[dim]  --http[/dim]  Streamable HTTP", "[dim]pskit serve --http --port 9000[/dim]")
-    cmd.add_row("doctor",  "Live system health check",             "streaming · parallel · ~3s")
-    cmd.add_row("audit",   "Command audit log + KAN scores",       "verdicts · score bars · stats")
-    cmd.add_row("version", "Print version and exit",               "")
-
-    con.print(Panel(
-        cmd,
-        title="[bold white]Commands[/bold white]",
-        border_style="cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-    ))
+    cmd.add_column("", style="bold cyan", no_wrap=True, width=10)
+    cmd.add_column("", no_wrap=False)
+    cmd.add_column("", style="dim", no_wrap=True)
+    cmd.add_row("serve",   "Start MCP server on stdio",           "default when piped to a client")
+    cmd.add_row("",        "[dim]  --http[/]  Streamable HTTP",   "[dim]pskit serve --http --port 9000[/]")
+    cmd.add_row("doctor",  "Live system health check",            "streaming · parallel · ~3s")
+    cmd.add_row("audit",   "Command audit log + KAN scores",      "verdicts · score bars · stats")
+    cmd.add_row("version", "Print version",                       "")
+    con.print(Panel(cmd, title="[bold]Commands[/]", border_style="cyan",
+                    box=box.ROUNDED, padding=(0, 1)))
     con.print()
 
-    # ── Quick start — side by side ────────────────────────────────────────────
-    claude_desktop_json = '''{
-  "mcpServers": {
-    "pskit": {
-      "command": "uvx",
-      "args": ["pskit-mcp"],
-      "env": {
-        "PSKIT_ALLOWED_ROOT": "C:\\\\Projects"
-      }
-    }
-  }
-}'''
+    # Quick start + JSON config side by side
+    qs = Table(show_header=False, box=None, padding=(0, 1), expand=False)
+    qs.add_column("", style="dim", no_wrap=True, width=16)
+    qs.add_column("", style="bold white")
+    qs.add_row("pip",         "[cyan]pip install pskit-mcp[/]")
+    qs.add_row("uvx",         "[cyan]uvx pskit-mcp[/]")
+    qs.add_row("", "")
+    qs.add_row("Claude Code", "[cyan]claude mcp add pskit[/]")
+    qs.add_row("",            "[dim cyan]  -- uvx pskit-mcp[/]")
 
-    config_syn = Syntax(
-        claude_desktop_json, "json",
-        theme="monokai", background_color="default",
-        padding=(0, 0),
-    )
-
-    qs_left = Table(show_header=False, box=None, padding=(0, 1), expand=False)
-    qs_left.add_column("k", style="dim", no_wrap=True, width=17)
-    qs_left.add_column("v", style="bold white")
-    qs_left.add_row("pip",          "[cyan]pip install pskit-mcp[/cyan]")
-    qs_left.add_row("uvx (no venv)", "[cyan]uvx pskit-mcp[/cyan]")
-    qs_left.add_row("", "")
-    qs_left.add_row("Claude Code",  "[cyan]claude mcp add pskit[/cyan]")
-    qs_left.add_row("",             "[dim cyan]  -- uvx pskit-mcp[/dim cyan]")
-
-    left_panel = Panel(
-        qs_left,
-        title="[bold white]Install & Connect[/bold white]",
-        border_style="cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-        expand=True,
-    )
-    right_panel = Panel(
-        config_syn,
-        title="[bold white]claude_desktop_config.json[/bold white]",
-        border_style="dim cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-        expand=True,
-    )
-
-    con.print(Columns([left_panel, right_panel], equal=True, expand=True))
+    cfg_json = '{\n  "mcpServers": {\n    "pskit": {\n      "command": "uvx",\n      "args": ["pskit-mcp"],\n      "env": {\n        "PSKIT_ALLOWED_ROOT": "C:\\\\Projects"\n      }\n    }\n  }\n}'
+    con.print(Columns([
+        Panel(qs,
+              title="[bold]Install & Connect[/]",
+              border_style="cyan", box=box.ROUNDED, padding=(0, 1), expand=True),
+        Panel(Syntax(cfg_json, "json", theme="monokai", background_color="default"),
+              title="[bold]claude_desktop_config.json[/]",
+              border_style="dim cyan", box=box.ROUNDED, padding=(0, 1), expand=True),
+    ], equal=True, expand=True))
     con.print()
 
-    # ── Safety pipeline ───────────────────────────────────────────────────────
-    if uni:
-        pipe = (
-            "[green]Cache[/green] [dim]──▶[/dim] "
-            "[cyan]KAN Neural[/cyan] [dim](24 features, <1ms) ──▶[/dim] "
-            "[yellow]Blocklist[/yellow] [dim]──▶[/dim] "
-            "[yellow]Path Guard[/yellow] [dim]──▶[/dim] "
-            "[magenta]Gemma LLM[/magenta] [dim](optional, fail-open) ──▶[/dim] "
-            "[bold green]Execute[/bold green]"
-        )
-    else:
-        pipe = (
-            "[green]Cache[/green] --> "
-            "[cyan]KAN Neural[/cyan] --> "
-            "[yellow]Blocklist[/yellow] --> "
-            "[yellow]Path Guard[/yellow] --> "
-            "[magenta]Gemma LLM[/magenta] --> "
-            "[bold green]Execute[/bold green]"
-        )
-    con.print(Panel(
-        pipe,
-        title="[bold white]5-Tier Safety Pipeline[/bold white]",
-        border_style="dim cyan",
-        box=box.ROUNDED,
-        padding=(0, 1),
-    ))
+    # Safety pipeline
+    arr = "[dim]-->[/]" if not uni else "[dim]──>[/]"
+    pipe = (f"[green]Cache[/] {arr} [cyan]KAN Neural[/] [dim](24 features, <1ms)[/] {arr} "
+            f"[yellow]Blocklist[/] {arr} [yellow]Path Guard[/] {arr} "
+            f"[magenta]Gemma LLM[/] [dim](optional)[/] {arr} [bold green]Execute[/]")
+    con.print(Panel(pipe, title="[bold]5-Tier Safety Pipeline[/]",
+                    border_style="dim cyan", box=box.ROUNDED, padding=(0, 1)))
     con.print()
-
-    # ── Stats footer ──────────────────────────────────────────────────────────
-    stats = [
-        "[cyan]38 tools[/cyan]",
-        "[cyan]6 prompts[/cyan]",
-        "[cyan]2 resources[/cyan]",
-        "[dim]MIT license[/dim]",
-        "[dim]github.com/Nickalus12/pskit[/dim]",
-    ]
-    con.print("  " + "  [dim]·[/dim]  ".join(stats))
+    con.print("  [dim]38 tools  ·  6 prompts  ·  2 resources  ·  MIT  ·  github.com/Nickalus12/pskit[/]")
     con.print()
 
 
@@ -217,73 +134,52 @@ def _startup_animation() -> None:
     import time
     import rich.box as box
     from pskit import __version__
-    from rich.align import Align
     from rich.panel import Panel
-    from rich.progress import (
-        BarColumn, Progress, SpinnerColumn,
-        TextColumn, TimeElapsedColumn,
-    )
+    from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
     from rich.text import Text
 
-    con = _console(stderr=True)
-    uni = _can_unicode(con)
+    con = _con(stderr=True)
+    uni = _can_uni(con)
 
-    # Header banner
     con.print()
     con.print(Panel.fit(
-        f"[bold cyan]{_LOGO_UNICODE if uni else 'PSKit'}[/bold cyan]\n"
-        f"[dim]v{__version__}  ·  Neural-safe PowerShell MCP server[/dim]",
-        border_style="cyan",
-        box=box.ROUNDED,
-        padding=(0, 3),
+        f"[bold cyan]{_LOGO if uni else 'PSKit'}[/]\n"
+        f"[dim]v{__version__}  ·  Neural-safe PowerShell MCP server[/]",
+        border_style="cyan", box=box.ROUNDED, padding=(0, 3),
     ))
     con.print()
 
     steps = [
-        ("KAN neural scorer",   0.20),
-        ("PowerShell module",   0.30),
-        ("Session pool (1/3)",  0.15),
-        ("Session pool (2/3)",  0.15),
-        ("Session pool (3/3)",  0.15),
-        ("MCP server",          0.10),
+        ("KAN neural scorer",   0.18),
+        ("PowerShell module",   0.28),
+        ("Session pool  1/3",   0.14),
+        ("Session pool  2/3",   0.14),
+        ("Session pool  3/3",   0.14),
+        ("MCP transport",       0.10),
     ]
 
-    spinner = "dots2" if uni else "line"
     with Progress(
-        SpinnerColumn(spinner_name=spinner, style="cyan"),
-        TextColumn("[bold]{task.description:<28}"),
-        BarColumn(
-            bar_width=30,
-            complete_style="cyan",
-            finished_style="bold green",
-            pulse_style="dim cyan",
-        ),
-        TextColumn("[dim]{task.fields[note]}[/dim]"),
+        SpinnerColumn(spinner_name="dots2" if uni else "line", style="cyan"),
+        TextColumn("[bold]{task.description:<26}"),
+        BarColumn(bar_width=28, complete_style="cyan", finished_style="bold green",
+                  pulse_style="dim cyan"),
+        TextColumn("[dim]{task.fields[note]:<8}[/]"),
         TimeElapsedColumn(),
-        console=con,
-        transient=False,
-    ) as progress:
-        for desc, duration in steps:
-            task = progress.add_task(desc, total=100, note="")
-            n = max(10, int(duration * 50))
+        console=con, transient=False,
+    ) as prog:
+        for desc, dur in steps:
+            t = prog.add_task(desc, total=100, note="")
+            n = max(10, int(dur * 60))
             for i in range(n):
-                progress.update(task, completed=int((i + 1) / n * 100))
-                time.sleep(duration / n)
-            progress.update(
-                task, completed=100,
-                description=f"[green]{desc}[/green]",
-                note="[green]ready[/green]",
-            )
+                prog.update(t, completed=int((i + 1) / n * 100))
+                time.sleep(dur / n)
+            prog.update(t, completed=100,
+                        description=f"[green]{desc}[/]",
+                        note="[green]ready[/]")
 
+    ok = "[bold green]✓[/]" if uni else "[bold green]+[/]"
     con.print()
-    ready_text = (
-        "  [bold green]✓  Ready[/bold green]  "
-        "[dim]38 tools  ·  5-tier safety  ·  3 sessions  ·  stdio[/dim]"
-    ) if uni else (
-        "  [bold green]OK  Ready[/bold green]  "
-        "[dim]38 tools  5-tier safety  3 sessions  stdio[/dim]"
-    )
-    con.print(ready_text)
+    con.print(f"  {ok}  [bold white]Ready[/]  [dim]38 tools · 5-tier safety · 3 sessions · stdio[/]")
     con.print()
 
 
@@ -293,18 +189,14 @@ def _serve_http(port: int = 8000) -> None:
     except ImportError:
         print("uvicorn required: pip install pskit-mcp[http]", file=sys.stderr)
         sys.exit(1)
-
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
-
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
     from pskit.server import mcp as _mcp_server
     from starlette.applications import Starlette
     from starlette.routing import Mount
-
     if _is_tty():
         _startup_animation()
-
     _app = _mcp_server._get_server()  # type: ignore[attr-defined]
     session_manager = StreamableHTTPSessionManager(app=_app)
 
@@ -313,16 +205,9 @@ def _serve_http(port: int = 8000) -> None:
         async with session_manager.run():
             yield
 
-    app = Starlette(
-        routes=[Mount("/mcp", app=session_manager.handle_request)],
-        lifespan=lifespan,
-    )
+    app = Starlette(routes=[Mount("/mcp", app=session_manager.handle_request)], lifespan=lifespan)
     if _is_tty():
-        _console(stderr=True).print(
-            f"  [bold cyan]HTTP[/bold cyan]  "
-            f"[white]http://0.0.0.0:{port}/mcp[/white]  "
-            f"[dim]streamable HTTP transport[/dim]\n"
-        )
+        _con(stderr=True).print(f"\n  [bold cyan]HTTP[/]  [white]http://0.0.0.0:{port}/mcp[/]  [dim]streamable HTTP[/]\n")
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
 
 
@@ -334,19 +219,15 @@ def _cmd_doctor() -> None:
     import time
     import urllib.request
     from concurrent.futures import ThreadPoolExecutor
-    import rich.box as box
-    from rich.console import Console
-    from rich.live import Live
-    from rich.panel import Panel
-    from rich.table import Table
 
-    _reconfigure(sys.stdout)
+    _fix_encoding(sys.stdout)
 
-    def _bin(name: str, flag: str = "--version") -> tuple[str, str]:
+    # ── individual checks ─────────────────────────────────────────────────────
+
+    def _bin(name, flag="--version"):
         try:
             r = subprocess.run([name, flag], capture_output=True, text=True, timeout=6)
-            ver = (r.stdout or r.stderr).strip().split("\n")[0][:55]
-            return "ok", ver
+            return "ok", (r.stdout or r.stderr).strip().split("\n")[0][:55]
         except FileNotFoundError:
             return "warn", "not found"
         except subprocess.TimeoutExpired:
@@ -354,149 +235,200 @@ def _cmd_doctor() -> None:
         except Exception as e:
             return "warn", str(e)[:55]
 
-    def check_pwsh()    -> tuple[str, str]:
-        s, v = _bin("pwsh"); return ("error", "NOT FOUND — required") if s == "warn" else ("ok", v)
-    def check_git()     -> tuple[str, str]:
-        s, v = _bin("git"); return ("error", "NOT FOUND — required") if s == "warn" else ("ok", v)
-    def check_rg()      -> tuple[str, str]:
+    def chk_pwsh():
+        s, v = _bin("pwsh")
+        return ("error", "NOT FOUND — required for all tools") if s == "warn" else ("ok", v)
+
+    def chk_git():
+        s, v = _bin("git")
+        return ("error", "NOT FOUND — required for git tools") if s == "warn" else ("ok", v)
+
+    def chk_rg():
         s, v = _bin("rg", "--version")
-        if s == "warn": return "warn", "not found — using Select-String fallback"
+        if s == "warn":
+            return "warn", "not found — Select-String fallback active"
         ver = v.split()[1] if len(v.split()) > 1 else v
-        return "ok", f"{ver} — fast search enabled"
-    def check_nvidia()  -> tuple[str, str]:
-        s, v = _bin("nvidia-smi"); return ("warn", "not found — gpu_status returns error") if s == "warn" else ("ok", v.split("\n")[0][:55])
-    def check_ollama()  -> tuple[str, str]:
+        return "ok", f"{ver}  ·  fast search active"
+
+    def chk_nvidia():
+        s, v = _bin("nvidia-smi")
+        return ("warn", "not found — gpu_status returns error") if s == "warn" else ("ok", v.split("\n")[0][:52])
+
+    def chk_ollama():
         base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         try:
             urllib.request.urlopen(base + "/api/tags", timeout=1.5)
-            return "ok", f"running — Tier 5 LLM review enabled"
+            return "ok", f"running  ·  Tier 5 LLM review active"
         except Exception:
-            return "warn", "not reachable — Tier 5 disabled (fail-open)"
-    def check_root()    -> tuple[str, str]:
-        from pskit.config import get_config; return "ok", get_config().allowed_root
-    def check_pool()    -> tuple[str, str]:
-        from pskit.config import get_config; return "ok", f"{get_config().pool_size} pre-warmed sessions"
-    def check_model()   -> tuple[str, str]:
-        from pskit.config import get_config; return "ok", get_config().safety_model
-    def check_kan()     -> tuple[str, str]:
+            return "warn", "not reachable  ·  Tier 5 disabled (fail-open)"
+
+    def chk_root():
+        from pskit.config import get_config
+        return "ok", get_config().allowed_root
+
+    def chk_pool():
+        from pskit.config import get_config
+        n = get_config().pool_size
+        return "ok", f"{n} pre-warmed sessions"
+
+    def chk_model():
+        from pskit.config import get_config
+        return "ok", get_config().safety_model
+
+    def chk_kan():
         from pathlib import Path
-        kan = Path(__file__).parent / "kan_model.pt"
-        return ("ok", f"trained — {kan.stat().st_size // 1024} KB") if kan.exists() else ("warn", "no trained weights — heuristic active")
+        p = Path(__file__).parent / "kan_model.pt"
+        return ("ok", f"trained  ·  {p.stat().st_size // 1024} KB") if p.exists() \
+            else ("warn", "no trained weights  ·  heuristic active")
 
     CHECKS = [
-        ("pwsh",   "PowerShell 7+",  "Dependencies",   check_pwsh),
-        ("git",    "Git",            "Dependencies",   check_git),
-        ("rg",     "ripgrep",        "Dependencies",   check_rg),
-        ("nvidia", "NVIDIA GPU",     "Dependencies",   check_nvidia),
-        ("ollama", "Ollama",         "Services",       check_ollama),
-        ("root",   "Allowed root",   "Configuration",  check_root),
-        ("pool",   "Session pool",   "Configuration",  check_pool),
-        ("model",  "Safety model",   "Configuration",  check_model),
-        ("kan",    "KAN model",      "Configuration",  check_kan),
+        # (key, label, group, fn, is_required)
+        ("pwsh",   "PowerShell 7+",  "Dependencies",   chk_pwsh,   True),
+        ("git",    "Git",            "Dependencies",   chk_git,    True),
+        ("rg",     "ripgrep",        "Dependencies",   chk_rg,     False),
+        ("nvidia", "NVIDIA GPU",     "Dependencies",   chk_nvidia, False),
+        ("ollama", "Ollama",         "Services",       chk_ollama, False),
+        ("root",   "Allowed root",   "Configuration",  chk_root,   False),
+        ("pool",   "Session pool",   "Configuration",  chk_pool,   False),
+        ("model",  "Safety model",   "Configuration",  chk_model,  False),
+        ("kan",    "KAN model",      "Configuration",  chk_kan,    False),
     ]
 
     try:
         from rich.console import Console
         from rich.live import Live
+        from rich.table import Table
         _rich = True
     except ImportError:
         _rich = False
 
     if not _rich:
-        for _, label, _, fn in CHECKS:
+        for _, lbl, _, fn, _ in CHECKS:
             s, d = fn()
-            print(f"  [{'OK' if s == 'ok' else '!!'}] {label}: {d}")
+            print(f"  [{'OK' if s == 'ok' else '!!'}] {lbl}: {d}")
         sys.exit(0)
 
-    SPIN = "|/-\\"
-    con = Console(legacy_windows=False, highlight=False)
-    uni = _can_unicode(con)
-    results: dict[str, tuple[str, str]] = {k: ("pending", "") for k, *_ in CHECKS}
-    start = time.monotonic()
+    from rich.console import Console
+    from rich.live import Live
+    from rich.table import Table
+    from rich.text import Text
 
-    def build_panel(frame: int = 0) -> Panel:
+    con = Console(legacy_windows=False, highlight=False)
+    uni = _can_uni(con)
+    results: dict[str, tuple[str, str, float]] = {k: ("pending", "", 0.0) for k, *_ in CHECKS}
+    t0 = time.monotonic()
+    SPIN = "|/-\\"
+
+    # ── status icons ──────────────────────────────────────────────────────────
+    def _icon(status: str) -> str:
+        if not uni:
+            return {"ok": "[green]+[/]", "warn": "[yellow]![/]", "error": "[red]X[/]", "pending": "[dim].[/]"}[status]
+        return {"ok": "[bold green]✓[/]", "warn": "[bold yellow]⚠[/]", "error": "[bold red]✗[/]", "pending": "[dim]·[/]"}[status]
+
+    def build(frame: int = 0) -> Table:
         spin = SPIN[frame % len(SPIN)]
-        t = Table(show_header=False, box=None, padding=(0, 1), expand=False)
-        t.add_column("", width=3, no_wrap=True)
-        t.add_column("", width=22, no_wrap=True)
-        t.add_column("", ratio=1)
+        t = Table(show_header=False, box=None, padding=(0, 0), expand=True, show_edge=False)
+        t.add_column("", width=3, no_wrap=True)    # icon
+        t.add_column("", width=18, no_wrap=True)   # label
+        t.add_column("", ratio=1)                   # detail
+        t.add_column("", width=8, no_wrap=True, justify="right")  # timing
 
         last_group = None
-        for key, label, group, _ in CHECKS:
+        for key, label, group, _, _ in CHECKS:
             if group != last_group:
                 if last_group is not None:
-                    t.add_row("", "", "")
-                t.add_row("", f"[bold dim]{group}[/bold dim]", "")
+                    t.add_row("", "", "", "")
+                # Section header as a rule-style row
+                t.add_row(
+                    "",
+                    f"[bold dim]{group}[/]",
+                    "[dim]" + ("─" * 45) + "[/]",
+                    "",
+                )
                 last_group = group
-            status, detail = results[key]
+
+            status, detail, elapsed = results[key]
+
             if status == "pending":
-                icon  = f"[bold yellow]{spin}[/bold yellow]"
-                lbl   = f"[dim]{label}[/dim]"
-                det   = "[dim]checking...[/dim]"
+                icon = f"[yellow]{spin}[/]"
+                lbl_fmt = f"[dim]{label}[/]"
+                det_fmt = "[dim]checking...[/]"
+                tim_fmt = ""
             elif status == "ok":
-                icon  = "[bold green]✓[/bold green]" if uni else "[bold green]+[/bold green]"
-                lbl   = f"[bold]{label}[/bold]"
-                det   = detail
+                icon = _icon("ok")
+                lbl_fmt = f"[bold]{label}[/]"
+                det_fmt = f"[white]{detail}[/]"
+                tim_fmt = f"[dim]{int(elapsed*1000)}ms[/]"
             elif status == "warn":
-                icon  = "[bold yellow]⚠[/bold yellow]" if uni else "[bold yellow]![/bold yellow]"
-                lbl   = f"[yellow]{label}[/yellow]"
-                det   = f"[dim yellow]{detail}[/dim yellow]"
+                icon = _icon("warn")
+                lbl_fmt = f"[yellow]{label}[/]"
+                det_fmt = f"[dim yellow]{detail}[/]"
+                tim_fmt = f"[dim]{int(elapsed*1000)}ms[/]"
             else:
-                icon  = "[bold red]✗[/bold red]" if uni else "[bold red]X[/bold red]"
-                lbl   = f"[bold red]{label}[/bold red]"
-                det   = f"[red]{detail}[/red]"
-            t.add_row(icon, lbl, det)
+                icon = _icon("error")
+                lbl_fmt = f"[bold red]{label}[/]"
+                det_fmt = f"[red]{detail}[/]"
+                tim_fmt = f"[dim]{int(elapsed*1000)}ms[/]"
 
-        elapsed = time.monotonic() - start
-        t.add_row("", "", "")
-        t.add_row("", "", f"[dim]{elapsed:.1f}s[/dim]")
-        return Panel(t, title="[bold white]PSKit Doctor[/bold white]",
-                     border_style="cyan", box=box.ROUNDED, padding=(0, 1))
+            t.add_row(f" {icon}", f" {lbl_fmt}", f"  {det_fmt}", tim_fmt)
 
+        return t
+
+    # ── render loop ───────────────────────────────────────────────────────────
     con.print()
+    # Header rule
+    from pskit import __version__
+    con.rule(f"[bold cyan]PSKit[/] [dim]v{__version__}[/]  [dim]System Health Check[/]",
+             style="cyan")
+    con.print()
+
     frame = 0
-    with Live(build_panel(frame), console=con, refresh_per_second=12,
+    with Live(build(frame), console=con, refresh_per_second=15,
               vertical_overflow="visible") as live:
         futures: dict = {}
         with ThreadPoolExecutor(max_workers=6) as pool:
-            for key, _, __, fn in CHECKS:
+            for key, _, __, fn, _req in CHECKS:
                 futures[pool.submit(fn)] = key
             pending = set(futures.values())
             while pending:
                 for fut in [f for f in futures if f.done() and futures[f] in pending]:
                     key = futures[fut]
-                    try:    results[key] = fut.result()
-                    except Exception as e: results[key] = ("warn", str(e)[:55])
+                    elapsed = time.monotonic() - t0
+                    try:
+                        status, detail = fut.result()
+                    except Exception as exc:
+                        status, detail = "warn", str(exc)[:55]
+                    results[key] = (status, detail, elapsed)
                     pending.discard(key)
                 frame += 1
-                live.update(build_panel(frame))
-                time.sleep(0.08)
-        live.update(build_panel(frame))
+                live.update(build(frame))
+                time.sleep(0.07)
+        live.update(build(frame))
 
-    ok_c   = sum(1 for s, _ in results.values() if s == "ok")
-    warn_c = sum(1 for s, _ in results.values() if s == "warn")
-    err_c  = sum(1 for s, _ in results.values() if s == "error")
-    ms     = int((time.monotonic() - start) * 1000)
+    # ── summary footer ────────────────────────────────────────────────────────
+    ok_c   = sum(1 for s, _, __ in results.values() if s == "ok")
+    warn_c = sum(1 for s, _, __ in results.values() if s == "warn")
+    err_c  = sum(1 for s, _, __ in results.values() if s == "error")
+    total_ms = int((time.monotonic() - t0) * 1000)
+
     con.print()
     if err_c:
-        con.print(f"  [bold red]✗  {err_c} required check(s) failed[/bold red]  [dim]({ok_c} ok · {warn_c} warnings · {ms}ms)[/dim]")
+        con.rule(f"[bold red]{_icon('error')}  {err_c} required check(s) failed[/]  [dim]{ok_c} ok · {warn_c} warnings · {total_ms}ms[/]", style="red")
     elif warn_c:
-        ok_sym = "✓" if uni else "+"
-        con.print(f"  [bold green]{ok_sym}  {ok_c} passed[/bold green]  [dim yellow]⚠ {warn_c} warning(s)  ({ms}ms)[/dim yellow]")
+        con.rule(f"[bold green]{_icon('ok')}  {ok_c} passed[/]  [dim yellow]⚠ {warn_c} warning(s) · {total_ms}ms[/]", style="dim")
     else:
-        ok_sym = "✓" if uni else "+"
-        con.print(f"  [bold green]{ok_sym}  All {ok_c} checks passed[/bold green]  [dim]({ms}ms)[/dim]")
+        con.rule(f"[bold green]{_icon('ok')}  All {ok_c} checks passed · {total_ms}ms[/]", style="green")
     con.print()
-    sys.exit(0 if results.get("pwsh", ("error",""))[0] != "error"
-             and results.get("git",  ("error",""))[0] != "error" else 1)
+
+    critical = all(results.get(k, ("error", "", 0.0))[0] != "error" for k in ("pwsh", "git"))
+    sys.exit(0 if critical else 1)
 
 
 # ── Audit ─────────────────────────────────────────────────────────────────────
 
 def _cmd_audit() -> None:
-    _reconfigure(sys.stdout)
+    _fix_encoding(sys.stdout)
     import rich.box as box
-    from rich.console import Console
 
     try:
         from rich.columns import Columns
@@ -514,10 +446,8 @@ def _cmd_audit() -> None:
 
     if not entries:
         if _rich:
-            Console(legacy_windows=False).print(
-                "\n  [dim]No audit entries yet.[/dim]  "
-                "Run the MCP server and use some tools first.\n"
-            )
+            con = __import__("rich.console", fromlist=["Console"]).Console(legacy_windows=False)
+            con.print("\n  [dim]No audit entries yet. Run the server and use some tools first.[/]\n")
         else:
             print("\nNo audit entries yet.\n")
         return
@@ -527,75 +457,84 @@ def _cmd_audit() -> None:
             print(f"[{e.get('ts','')[:19]}] {e.get('verdict',''):8} kan={e.get('kan',0):.3f} {e.get('cmd','')[:60]}")
         return
 
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.table import Table
+    from rich.text import Text
+
     con = Console(legacy_windows=False, highlight=False)
-    uni = _can_unicode(con)
-    BLOCKS = " ▁▂▃▄▅▆▇█" if uni else " .::|||XX"
+    uni = _can_uni(con)
+    FULL  = "█" if uni else "#"
+    EMPTY = "░" if uni else "."
 
-    def _bar(score: float, width: int = 8) -> str:
-        filled = round(score * width)
-        b = BLOCKS[-1] * filled + BLOCKS[1] * (width - filled)
+    def _bar(score: float, w: int = 8) -> str:
+        filled = round(score * w)
+        bar = FULL * filled + EMPTY * (w - filled)
         c = "green" if score < 0.3 else "yellow" if score < 0.7 else "red"
-        return f"[{c}]{b}[/{c}]"
+        return f"[{c}]{bar}[/{c}]"
 
+    from pskit import __version__
     con.print()
-    con.print(Panel.fit(
-        "[bold cyan]PSKit[/bold cyan] [dim]·[/dim] [white]Command Audit Log[/white]",
-        border_style="cyan", box=box.ROUNDED, padding=(0, 2),
-    ))
+    con.rule(f"[bold cyan]PSKit[/] [dim]v{__version__}[/]  [dim]Command Audit Log[/]", style="cyan")
     con.print()
 
-    t = Table(show_header=True, header_style="bold dim", box=box.ROUNDED,
-              border_style="dim", padding=(0, 1), expand=False)
-    t.add_column("Time",    style="dim",   width=19,  no_wrap=True)
-    t.add_column("Verdict",               width=9,   no_wrap=True)
-    t.add_column("Risk",                  width=10,  no_wrap=True)
-    t.add_column("KAN",     justify="right", width=6, no_wrap=True)
-    t.add_column("ms",      justify="right", width=6, no_wrap=True)
+    t = Table(
+        show_header=True, header_style="bold dim",
+        box=box.SIMPLE_HEAD, border_style="dim",
+        padding=(0, 1), expand=False,
+        show_edge=True,
+    )
+    t.add_column("Time",    style="dim", width=19, no_wrap=True)
+    t.add_column("Verdict",             width=9,  no_wrap=True)
+    t.add_column("Risk",                width=10, no_wrap=True)
+    t.add_column("KAN",  justify="right", width=6, no_wrap=True)
+    t.add_column("ms",   justify="right", width=6, no_wrap=True)
     t.add_column("Command")
+
+    COLORS = {"safe": "green", "caution": "yellow", "blocked": "bold red"}
 
     for e in entries:
         v = e.get("verdict", "")
-        vc = {"safe": "green", "caution": "yellow", "blocked": "red"}.get(v, "dim")
+        vc = COLORS.get(v, "dim")
         kan = float(e.get("kan", 0.0))
         kc = "green" if kan < 0.3 else "yellow" if kan < 0.7 else "red"
         ok = e.get("ok", True)
-        cmd = e.get("cmd", "")[:64]
+        cmd = e.get("cmd", "")[:65]
         t.add_row(
             e.get("ts", "")[:19].replace("T", " "),
             f"[{vc}]{v}[/{vc}]",
             _bar(kan),
             f"[{kc}]{kan:.3f}[/{kc}]",
             str(e.get("ms", "")),
-            cmd if ok else f"[dim red]{cmd}[/dim red]",
+            cmd if ok else f"[dim red]{cmd}[/]",
         )
 
     con.print(t)
     con.print()
 
-    total   = stats["total"]
-    all_e   = audit.tail(total)
-    safe_n  = sum(1 for e in all_e if e.get("verdict") == "safe")
-    caut_n  = sum(1 for e in all_e if e.get("verdict") == "caution")
-    blk_n   = sum(1 for e in all_e if e.get("verdict") == "blocked")
+    # Stats footer with distribution bar
+    total  = stats["total"]
+    all_e  = audit.tail(total)
+    safe_n = sum(1 for e in all_e if e.get("verdict") == "safe")
+    caut_n = sum(1 for e in all_e if e.get("verdict") == "caution")
+    blk_n  = sum(1 for e in all_e if e.get("verdict") == "blocked")
 
     if total > 0 and uni:
-        seg = max(1, round(safe_n / total * 24))
+        W = 24
         dist = (
-            f"[green]{'█' * seg}[/green]"
-            f"[yellow]{'█' * max(0, round(caut_n / total * 24))}[/yellow]"
-            f"[red]{'█' * max(0, round(blk_n / total * 24))}[/red]"
+            f"[green]{'█' * max(1, round(safe_n  / total * W))}[/]"
+            f"[yellow]{'█' * max(0, round(caut_n  / total * W))}[/]"
+            f"[red]{'█'    * max(0, round(blk_n   / total * W))}[/]"
         )
     else:
         dist = ""
 
-    con.print(
-        f"  {dist}  [dim]"
-        f"total [bold]{total}[/bold]  "
-        f"safe [green]{safe_n}[/green]  "
-        f"caution [yellow]{caut_n}[/yellow]  "
-        f"blocked [red]{blk_n}[/red]  "
-        f"·  avg KAN [bold]{stats['avg_kan_score']:.3f}[/bold]  "
-        f"avg [bold]{stats['avg_duration_ms']:.0f}ms[/bold][/dim]"
+    con.rule(
+        f"{dist}  [dim]total [bold]{total}[/]  "
+        f"safe [green]{safe_n}[/]  caution [yellow]{caut_n}[/]  blocked [red]{blk_n}[/]  "
+        f"·  avg KAN [bold]{stats['avg_kan_score']:.3f}[/]  "
+        f"avg [bold]{stats['avg_duration_ms']:.0f}ms[/][/dim]",
+        style="dim",
     )
     con.print()
 
@@ -604,11 +543,10 @@ def _cmd_audit() -> None:
 
 def _cmd_version() -> None:
     from pskit import __version__
-    _reconfigure(sys.stdout)
-    _console().print(
-        f"[bold cyan]pskit[/bold cyan] [white]{__version__}[/white]  "
-        "[dim]Neural-safe PowerShell MCP server  ·  "
-        "github.com/Nickalus12/pskit[/dim]"
+    _fix_encoding(sys.stdout)
+    _con().print(
+        f"[bold cyan]pskit[/] [white]{__version__}[/]  "
+        "[dim]Neural-safe PowerShell MCP  ·  github.com/Nickalus12/pskit[/]"
     )
 
 
@@ -621,14 +559,9 @@ def main() -> None:
         _cmd_help() if sys.stdout.isatty() else _serve_stdio()
         return
     {
-        "serve":     _cmd_serve,
-        "doctor":    _cmd_doctor,
-        "audit":     _cmd_audit,
-        "version":   _cmd_version,
-        "--version": _cmd_version,
-        "-v":        _cmd_version,
-        "--help":    _cmd_help,
-        "-h":        _cmd_help,
+        "serve": _cmd_serve, "doctor": _cmd_doctor, "audit": _cmd_audit,
+        "version": _cmd_version, "--version": _cmd_version, "-v": _cmd_version,
+        "--help": _cmd_help, "-h": _cmd_help,
     }.get(cmd, _cmd_serve)()
 
 
