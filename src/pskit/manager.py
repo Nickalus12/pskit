@@ -7,13 +7,13 @@ import re
 import struct
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from pskit.kan_engine import PSKitKANEngine
 
-# Lightweight built-in counters — no external telemetry dependency
+# Lightweight built-in counters
 _counters: dict[str, int] = {}
 
 def _inc(name: str) -> None:
@@ -100,9 +100,9 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 # Note: ConstrainedLanguage mode cannot be set programmatically from FullLanguage.
 # Security is enforced via: (1) local Gemma safety review, (2) path allowlist,
 # (3) dangerous command blocklist, and (4) project-root working directory.
-Set-Location '__LOOM_PROJECT_ROOT__'
+Set-Location '__PSKIT_PROJECT_ROOT__'
 try {
-    Import-Module '__LOOM_MODULE_PATH__' -Force -ErrorAction Stop
+    Import-Module '__PSKIT_MODULE_PATH__' -Force -ErrorAction Stop
 } catch {
     Write-Warning "Loom module failed to load: $($_.Exception.Message). Loom cmdlets will be unavailable."
 }
@@ -127,14 +127,14 @@ _PIPE_SERVER_TEMPLATE = r"""
 $ErrorActionPreference = 'Continue'
 $OutputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Set-Location '__LOOM_PROJECT_ROOT__'
+Set-Location '__PSKIT_PROJECT_ROOT__'
 try {
-    Import-Module '__LOOM_MODULE_PATH__' -Force -ErrorAction Stop
+    Import-Module '__PSKIT_MODULE_PATH__' -Force -ErrorAction Stop
 } catch {
     Write-Warning "Loom module failed to load: $($_.Exception.Message)"
 }
 
-$__loomPipeName = '__LOOM_PIPE_NAME__'
+$__loomPipeName = '__PSKIT_PIPE_NAME__'
 $__loomPipe = [System.IO.Pipes.NamedPipeServerStream]::new(
     $__loomPipeName,
     [System.IO.Pipes.PipeDirection]::InOut,
@@ -416,7 +416,7 @@ class PSKitManager:
         self,
         project_root: str | Path | None = None,
         local_engine: Any = None,
-            kan_engine: PSKitKANEngine | None = None,
+        kan_engine: PSKitKANEngine | None = None,
     ) -> None:
         self._project_root = Path(project_root) if project_root else Path.cwd()
         self._local_engine = local_engine
@@ -471,6 +471,584 @@ class PSKitManager:
 
     # ----------------------------------------------------------------- telemetry
 
+    async def get_pool(self, pool_size: int = 3) -> "PSKitSessionPool":
+        """Lazily initialize and return the session pool."""
+        if self._pool is None:
+            self._pool = PSKitSessionPool(pool_size=pool_size)
+            await self._pool.initialize(self)
+        return self._pool
+
+    async def _find_pwsh(self) -> str:
+        if self._pwsh_path is not None:
+            return self._pwsh_path
+
+        for candidate in _PWSH_CANDIDATES:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    candidate, "--version",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+                if proc.returncode == 0:
+                    self._pwsh_path = candidate
+                    logger.info("Found PowerShell executable: %s", candidate)
+                    return candidate
+            except (FileNotFoundError, OSError):
+                continue
+            except asyncio.TimeoutError:
+                logger.debug("Timeout checking %s", candidate)
+                continue
+
+        raise RuntimeError(
+            "PowerShell 7.6+ not found. Install from https://github.com/PowerShell/PowerShell"
+        )
+
+    async def _get_or_create_session(
+        self, session_id: str = "default"
+    ) -> tuple[dict, bool]:
+        """Returns (session_dict, was_created)."""
+        existing = self._sessions.get(session_id)
+        if existing is not None:
+            proc = existing["process"]
+            if proc.returncode is None:
+                return existing, False
+            logger.warning(
+                "Session '%s' process exited (rc=%s), restarting",
+                session_id,
+                proc.returncode,
+            )
+            # Clean up dead pipe client before restarting
+            pipe: _NamedPipeClient | None = existing.get("pipe")
+            if pipe:
+                pipe.close()
+
+        pwsh_path = await self._find_pwsh()
+
+        proc = await asyncio.create_subprocess_exec(
+            pwsh_path, "-NoProfile", "-NonInteractive", "-Command", "-",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        # Try named-pipe session first (fast path)
+        pipe_client, drain_task = await self._try_pipe_session(proc, session_id)
+        if pipe_client is None:
+            # Fall back to legacy stdin/stdout marker protocol
+            await self._init_legacy_session(proc, session_id)
+
+        session: dict = {
+            "process": proc,
+            "pipe": pipe_client,          # _NamedPipeClient | None
+            "drain_task": drain_task,     # asyncio.Task | None
+            "created": datetime.now(timezone.utc),
+            "command_count": 0,
+            "last_command": None,
+        }
+        self._sessions[session_id] = session
+        mode = "pipe" if pipe_client else "stdin/stdout"
+        logger.info(
+            "PowerShell session '%s' created (pid=%d, mode=%s)",
+            session_id, proc.pid, mode,
+        )
+        return session, True
+
+    async def _try_pipe_session(
+        self,
+        proc: asyncio.subprocess.Process,
+        session_id: str,
+    ) -> tuple[_NamedPipeClient | None, asyncio.Task | None]:
+        """Start the pipe server in the PS process and connect to it.
+
+        Returns (client, drain_task) on success, (None, None) on failure.
+
+        Deadlock prevention: stderr is drained concurrently while waiting for
+        the PIPE_READY signal. Without this, PS stderr from module loading can
+        fill the pipe buffer and block stdout, causing _wait_ready() to hang.
+        """
+        pipe_name = f"pskit-{session_id}-{uuid.uuid4().hex[:12]}"
+        server_script = (
+            _PIPE_SERVER_TEMPLATE
+            .replace("__PSKIT_PROJECT_ROOT__", str(self._project_root).replace("'", "''"))
+            .replace("__PSKIT_MODULE_PATH__", _MODULE_PATH)
+            .replace("__PSKIT_PIPE_NAME__", pipe_name)
+        )
+        try:
+            logger.debug("[Pipe] Writing server script to stdin (%d bytes)", len(server_script))
+            proc.stdin.write(server_script.encode("utf-8") + b"\n")
+            await proc.stdin.drain()
+
+            ready_marker = f"PIPE_READY:{pipe_name}"
+
+            async def _wait_ready() -> bool:
+                logger.debug("[Pipe] Waiting for '%s' on stdout…", ready_marker)
+                while True:
+                    raw = await proc.stdout.readline()
+                    if not raw:
+                        logger.debug("[Pipe] stdout EOF before PIPE_READY")
+                        return False
+                    line = raw.decode("utf-8", errors="replace").strip()
+                    logger.debug("[Pipe] stdout line: %r", line)
+                    if line == ready_marker:
+                        return True
+
+            async def _drain_stderr_init() -> None:
+                """Drain stderr during startup to prevent buffer-full deadlock."""
+                try:
+                    while True:
+                        raw = await asyncio.wait_for(proc.stderr.readline(), timeout=20)
+                        if not raw:
+                            break
+                        logger.debug("[Pipe] stderr: %r", raw.decode("utf-8", errors="replace").rstrip())
+                except asyncio.TimeoutError:
+                    pass
+                except Exception:
+                    pass
+
+            # Race: wait for PIPE_READY while draining stderr concurrently
+            ready_task = asyncio.create_task(_wait_ready())
+            stderr_drain = asyncio.create_task(_drain_stderr_init())
+            try:
+                ready = await asyncio.wait_for(asyncio.shield(ready_task), timeout=15)
+            except asyncio.TimeoutError:
+                ready_task.cancel()
+                logger.warning("[Pipe] Timed out waiting for PIPE_READY — falling back to stdin/stdout")
+                stderr_drain.cancel()
+                return None, None
+            finally:
+                stderr_drain.cancel()
+
+            if not ready:
+                logger.warning("[Pipe] stdout closed before PIPE_READY — falling back")
+                return None, None
+
+            logger.debug("[Pipe] PIPE_READY received, connecting client…")
+            client = _NamedPipeClient(pipe_name)
+            await client.connect(timeout=10)
+            logger.info("[Pipe] Session '%s' connected via named pipe (%s)", session_id, pipe_name)
+
+            # Background task: drain stdout to prevent buffer deadlock
+            drain_task = asyncio.create_task(
+                self._drain_stdout(proc), name=f"drain-{session_id}"
+            )
+            return client, drain_task
+
+        except Exception as exc:
+            logger.warning("[Pipe] Init failed, falling back to stdin/stdout: %s", exc, exc_info=True)
+            return None, None
+
+    async def _init_legacy_session(
+        self, proc: asyncio.subprocess.Process, session_id: str
+    ) -> None:
+        """Initialize a stdin/stdout marker-based session (legacy fallback)."""
+        init_script = _SESSION_INIT_TEMPLATE.replace(
+            "__PSKIT_PROJECT_ROOT__", str(self._project_root).replace("'", "''")
+        ).replace("__PSKIT_MODULE_PATH__", _MODULE_PATH)
+        init_marker = f"___LOOM_INIT_{uuid.uuid4().hex[:12]}___"
+        wrapped = (
+            f"Write-Host '{init_marker}'\n{init_script}\nWrite-Host '{init_marker}'\n"
+        )
+        proc.stdin.write(wrapped.encode("utf-8"))
+        await proc.stdin.drain()
+        try:
+            await self._read_until_marker(proc, init_marker, timeout=15)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Session '%s' legacy init timed out, proceeding anyway", session_id
+            )
+
+    @staticmethod
+    async def _drain_stdout(proc: asyncio.subprocess.Process) -> None:
+        """Continuously drain and discard PS stdout after pipe handshake."""
+        try:
+            while proc.returncode is None:
+                chunk = await proc.stdout.read(4096)
+                if not chunk:
+                    break
+        except Exception:
+            pass
+
+    async def _read_until_marker(
+        self,
+        proc: asyncio.subprocess.Process,
+        marker: str,
+        timeout: int = 120,
+    ) -> str:
+        lines: list[str] = []
+        marker_count = 0
+        tail = ""  # partial line carried across chunks
+
+        async def _reader() -> str:
+            nonlocal marker_count, tail
+            while True:
+                chunk = await proc.stdout.read(8192)
+                if not chunk:
+                    break
+                text = tail + chunk.decode("utf-8", errors="replace")
+                # Split on newlines but keep a possible partial last line
+                parts = text.split("\n")
+                tail = parts[-1]  # incomplete final segment — carry forward
+                for raw_line in parts[:-1]:
+                    line = raw_line.rstrip("\r")
+                    if marker in line:
+                        marker_count += 1
+                        if marker_count >= 2:
+                            return "\n".join(lines)
+                        continue
+                    if marker_count >= 1:
+                        lines.append(line)
+            # Flush any remaining tail on EOF
+            if tail:
+                line = tail.rstrip("\r")
+                if marker not in line and marker_count >= 1:
+                    lines.append(line)
+            return "\n".join(lines)
+
+        return await asyncio.wait_for(_reader(), timeout=timeout)
+
+    async def _collect_stderr(self, proc: asyncio.subprocess.Process) -> str:
+        collected: list[str] = []
+        try:
+            while True:
+                raw = await asyncio.wait_for(proc.stderr.readline(), timeout=0.1)
+                if not raw:
+                    break
+                collected.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
+        except asyncio.TimeoutError:
+            pass
+        return "\n".join(collected)
+
+    async def _send_and_receive(
+        self,
+        proc: asyncio.subprocess.Process,
+        wrapped_script: str,
+        marker: str,
+        timeout: int,
+    ) -> tuple[str, str]:
+        proc.stdin.write(wrapped_script.encode("utf-8"))
+        await proc.stdin.drain()
+
+        stdout_content = await self._read_until_marker(proc, marker, timeout=timeout)
+        stderr_content = await self._collect_stderr(proc)
+
+        return stdout_content, stderr_content
+
+    async def execute(
+        self,
+        script: str,
+        session_id: str = "default",
+        timeout: int = 120,
+        structured: bool = True,
+    ) -> dict:
+        try:
+            return await self._execute_inner(script, session_id, timeout, structured)
+        except RuntimeError as exc:
+            error_msg = str(exc)
+            if "not found" in error_msg.lower():
+                return {"success": False, "error": "PowerShell 7.6+ not available"}
+            return {"success": False, "error": error_msg}
+        except Exception as exc:
+            logger.error("Unexpected error in execute: %s", exc, exc_info=True)
+            return {"success": False, "error": f"Execution failed: {exc}"}
+
+    async def _execute_inner(
+        self,
+        script: str,
+        session_id: str,
+        timeout: int,
+        structured: bool,
+    ) -> dict:
+        safety_start = time.monotonic()
+        safety_timing: dict[str, int] = {}
+
+        # --- Result cache: return cached output for previously-executed read-only commands ---
+        is_readonly = self._is_readonly_command(script)
+        if is_readonly:
+            cached_result = self._result_cache.get(script, session_id)
+            if cached_result is not None:
+                logger.debug("[ResultCache] Hit for session=%s", session_id)
+                return cached_result
+        # --- Safety verdict cache: skip full pipeline for previously-approved commands ---
+        cached_verdict = self._get_cached_verdict(script)
+        if cached_verdict == "safe":
+            logger.debug("[Safety] Cache hit — skipping pipeline")
+            safety_timing["kan_ms"] = 0
+            safety_timing["blocklist_ms"] = 0
+            safety_timing["path_check_ms"] = 0
+            safety_timing["total_safety_ms"] = 0
+        else:
+            cached_verdict = None  # force full pipeline
+
+        # --- Tier 1: KAN Neural Scoring ---
+        kan_start = time.monotonic()
+        if cached_verdict is None:
+            kan_result = await self._kan.score_risk(script)
+        else:
+            kan_result = {"risk_level": "safe", "risk_score": 0.0, "model": "cache"}
+        safety_timing["kan_ms"] = int((time.monotonic() - kan_start) * 1000)
+
+        # Check elevated review BEFORE KAN blocking — elevated commands bypass
+        # the KAN hard-block and route to Gemma for intelligent review instead.
+        elevated_match = self._check_elevated_review(script) if cached_verdict is None else None
+        requires_gemma = elevated_match is not None
+
+        if cached_verdict is None and kan_result.get("risk_level") == "blocked" and not requires_gemma:
+            logger.warning("KAN pre-filter blocked command: %s", kan_result.get("risk_score"))
+            return {
+                "success": False,
+                "output": "",
+                "errors": "Command blocked by KAN safety pre-filter",
+                "session_id": session_id,
+                "execution_time_ms": 0,
+                "command": script,
+                "safety": kan_result,
+            }
+
+        skip_gemma = (
+            cached_verdict == "safe"
+            or is_readonly
+            or (
+                not requires_gemma
+                and kan_result.get("risk_level") == "safe"
+                and kan_result.get("risk_score", 1.0) < 0.2
+                and kan_result.get("model") == "kan"
+            )
+        )
+
+        # --- Tier 2: Dangerous Command Blocklist ---
+        blocklist_start = time.monotonic()
+        dangerous_match = self._check_dangerous_commands(script) if cached_verdict is None else None
+        safety_timing["blocklist_ms"] = int((time.monotonic() - blocklist_start) * 1000)
+        if dangerous_match is not None:
+            return {
+                "success": False,
+                "error": f"Dangerous command blocked: '{dangerous_match}'",
+            }
+
+        if requires_gemma:
+            logger.info("Elevated command '%s' detected — forcing Gemma safety review", elevated_match)
+
+        # --- Path Safety Check ---
+        path_start = time.monotonic()
+        path_safe = self._check_path_safety(script) if cached_verdict is None else True
+        safety_timing["path_check_ms"] = int((time.monotonic() - path_start) * 1000)
+        if not path_safe:
+            return {
+                "success": False,
+                "error": f"Path safety check failed: script references paths outside project root ({self._allowed_root})",
+            }
+
+        if not skip_gemma:
+            if self._local_engine is None or not hasattr(self._local_engine, "review_powershell_command"):
+                if requires_gemma:
+                    logger.warning("Elevated command '%s' requires Gemma review but no local engine is available", elevated_match)
+                    return {
+                        "success": False,
+                        "output": "",
+                        "errors": f"Elevated command '{elevated_match}' requires Gemma safety review, but Ollama is unavailable. Start Ollama to enable execution.",
+                        "session_id": session_id,
+                        "execution_time_ms": 0,
+                        "command": script,
+                        "safety": {"risk_level": "blocked", "reason": "Elevated command requires unavailable safety review"},
+                    }
+            # --- Tier 5: Gemma LLM Safety Review ---
+            if self._local_engine is not None and hasattr(self._local_engine, "review_powershell_command"):
+                gemma_start = time.monotonic()
+                try:
+                    safety_result = await self._local_engine.review_powershell_command(script)
+                    safety_timing["gemma_review_ms"] = int((time.monotonic() - gemma_start) * 1000)
+                    if isinstance(safety_result, dict) and safety_result.get("risk_level") == "blocked":
+                        return {
+                            "success": False,
+                            "error": "Command blocked by safety review",
+                            "safety": safety_result,
+                        }
+                except Exception as exc:
+                    safety_timing["gemma_review_ms"] = int((time.monotonic() - gemma_start) * 1000)
+                    logger.warning("Safety review unavailable (%s) — fail-open with CAUTION", exc)
+
+        safety_timing["total_safety_ms"] = int((time.monotonic() - safety_start) * 1000)
+        logger.info(
+            "[Safety] Pipeline: KAN=%dms | Blocklist=%dms | Path=%dms | Gemma=%dms | Total=%dms | cache=%s | readonly=%s",
+            safety_timing.get("kan_ms", 0), safety_timing.get("blocklist_ms", 0),
+            safety_timing.get("path_check_ms", 0), safety_timing.get("gemma_review_ms", 0),
+            safety_timing["total_safety_ms"],
+            cached_verdict == "safe",
+            is_readonly,
+        )
+        # Cache approved verdict for future identical commands
+        if cached_verdict != "safe" and not requires_gemma:
+            self._cache_verdict(script, "safe")
+
+        start_time = time.monotonic()
+
+        session, session_created = await self._get_or_create_session(session_id)
+        proc: asyncio.subprocess.Process = session["process"]
+        pipe: _NamedPipeClient | None = session.get("pipe")
+        try:
+            if pipe and pipe.connected:
+                resp = await pipe.execute(script, timeout=float(timeout))
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+                result = {
+                    "success": resp.get("success", True),
+                    "output": resp.get("output", ""),
+                    "errors": resp.get("errors", ""),
+                    "session_id": session_id,
+                    "execution_time_ms": elapsed_ms,
+                    "ps_exec_ms": resp.get("duration_ms", 0),
+                    "safety_timing": safety_timing,
+                    "command": script,
+                    "protocol": "pipe",
+                }
+            else:
+                # Legacy stdin/stdout marker protocol
+                marker = f"___LOOM_BOUNDARY_{uuid.uuid4().hex[:12]}___"
+                wrapped = (
+                    _EXEC_WRAPPER_TEMPLATE
+                    .replace("__LOOM_MARKER__", marker)
+                    .replace("__LOOM_SCRIPT__", script)
+                ) + "\n"
+                stdout_content, stderr_content = await self._send_and_receive(
+                    proc, wrapped, marker, timeout
+                )
+                elapsed_ms = int((time.monotonic() - start_time) * 1000)
+
+                success = not bool(stderr_content.strip())
+                filtered: list[str] = []
+                for line in stdout_content.splitlines():
+                    if line.startswith("LOOM_EXIT:"):
+                        parts = line.split(":")
+                        if len(parts) >= 2:
+                            success = parts[1] == "True" and not bool(stderr_content.strip())
+                    else:
+                        filtered.append(line)
+
+                result = {
+                    "success": success,
+                    "output": "\n".join(filtered),
+                    "errors": stderr_content,
+                    "session_id": session_id,
+                    "execution_time_ms": elapsed_ms,
+                    "safety_timing": safety_timing,
+                    "command": script,
+                    "protocol": "stdin/stdout",
+                }
+
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Command timed out after %ds in session '%s' — killing session",
+                timeout, session_id,
+            )
+            await self.close_session(session_id)
+            return {
+                "success": False,
+                "output": "",
+                "errors": f"Command timed out after {timeout}s. Session was reset.",
+                "session_id": session_id,
+                "execution_time_ms": int((time.monotonic() - start_time) * 1000),
+                "command": script,
+            }
+        except Exception as exc:
+            self._sessions.pop(session_id, None)
+            logger.warning(
+                "Session '%s' communication failed, removing: %s", session_id, exc
+            )
+            return {
+                "success": False,
+                "error": f"Session communication failed: {exc}",
+                "session_id": session_id,
+                "execution_time_ms": int((time.monotonic() - start_time) * 1000),
+                "command": script,
+            }
+
+        session["command_count"] += 1
+        session["last_command"] = datetime.now(timezone.utc)
+
+        self._kan.record_outcome(
+            script, result.get("success", False), kan_result.get("risk_level", "caution")
+        )
+
+        # Update result cache: store readonly results, invalidate on writes
+        if result.get("success"):
+            if is_readonly:
+                self._result_cache.put(script, session_id, result)
+            else:
+                self._result_cache.invalidate()
+
+        # Emit output size telemetry
+        output_bytes = len((result.get("output") or "").encode("utf-8"))
+        await self._log_command(script, result)
+        return result
+
+    async def close_session(self, session_id: str = "default") -> bool:
+        session = self._sessions.pop(session_id, None)
+        if session is None:
+            return False
+
+        # Close named pipe (sends exit message + closes transport)
+        pipe: _NamedPipeClient | None = session.get("pipe")
+        if pipe:
+            pipe.close()
+
+        # Cancel stdout drain task
+        drain: asyncio.Task | None = session.get("drain_task")
+        if drain and not drain.done():
+            drain.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(drain), timeout=1)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+
+        proc: asyncio.subprocess.Process = session["process"]
+        try:
+            if proc.returncode is None:
+                try:
+                    proc.stdin.write(b"exit\n")
+                    await proc.stdin.drain()
+                except OSError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    proc.terminate()
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=3)
+                    except asyncio.TimeoutError:
+                        proc.kill()
+        except (ProcessLookupError, OSError) as exc:
+            logger.debug("Process cleanup for session '%s': %s", session_id, exc)
+
+        logger.info("Session '%s' closed", session_id)
+        return True
+
+    async def close_all_sessions(self) -> int:
+        session_ids = list(self._sessions.keys())
+        count = 0
+        for sid in session_ids:
+            if await self.close_session(sid):
+                count += 1
+        return count
+
+    async def register_custom_tool(self, name: str, script: str) -> None:
+        ps_function = f"function {name} {{\n{script}\n}}"
+        self._custom_tools[name] = ps_function
+
+        for sid, session in list(self._sessions.items()):
+            proc = session["process"]
+            if proc.returncode is not None:
+                continue
+            try:
+                inject_marker = f"___LOOM_INJECT_{uuid.uuid4().hex[:12]}___"
+                wrapped = f"Write-Host '{inject_marker}'\n{ps_function}\nWrite-Host '{inject_marker}'\n"
+                proc.stdin.write(wrapped.encode("utf-8"))
+                await proc.stdin.drain()
+                await self._read_until_marker(proc, inject_marker, timeout=10)
+            except Exception as exc:
+                logger.warning("Failed to inject tool '%s' into session '%s': %s", name, sid, exc)
+
+        logger.info("Custom tool registered: %s", name)
+
     def list_custom_tools(self) -> list[str]:
         return list(self._custom_tools.keys())
 
@@ -494,12 +1072,11 @@ class PSKitManager:
         all_readonly = all(self._is_readonly_command(s) for s in scripts)
         if all_readonly and self._pool is not None and self._pool.initialized:
             logger.debug("[Batch] All-readonly batch — dispatching %d scripts in parallel", len(scripts))
-            _inc("ps_batch_total")
             tasks = [
                 asyncio.create_task(self._pool.execute_pooled(s, manager=self, timeout=timeout))
                 for s in scripts
             ]
-            raw = await asyncio.gather(*tasks)
+            raw = await asyncio.gather(*tasks, return_exceptions=True)
             return [
                 r if isinstance(r, dict) else {"success": False, "error": str(r)}
                 for r in raw
@@ -523,8 +1100,6 @@ class PSKitManager:
 
         session, session_created = await self._get_or_create_session(session_id)
         pipe: _NamedPipeClient | None = session.get("pipe")
-        _inc("ps_commands_total")
-
         start = time.monotonic()
 
         if pipe and pipe.connected:
@@ -555,7 +1130,7 @@ class PSKitManager:
                 results[i] = await self.execute(script, session_id, timeout)
 
         session["command_count"] += len(approved_indices)
-        session["last_command"] = datetime.now(UTC)
+        session["last_command"] = datetime.now(timezone.utc)
         return [r or {} for r in results]
 
     async def _safety_check_only(self, script: str, session_id: str) -> dict | None:
