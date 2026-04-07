@@ -91,7 +91,7 @@ _ELEVATED_REVIEW_COMMANDS: frozenset[str] = frozenset({
 
 _PWSH_CANDIDATES: tuple[str, ...] = ("pwsh-preview", "pwsh", "powershell")
 
-_MODULE_PATH = str(Path(__file__).parent / "PSKitTools.psm1").replace("\\", "/")
+_MODULE_PATH = str(Path(__file__).parent / "tools" / "PSKitTools.psm1").replace("\\", "/")
 
 _SESSION_INIT_TEMPLATE = """\
 $ErrorActionPreference = 'Continue'
