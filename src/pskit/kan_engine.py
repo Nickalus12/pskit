@@ -169,8 +169,17 @@ class PSKitKANEngine:
         # Smart detection: -WhatIf makes any command a dry run (safe)
         has_whatif = "-whatif" in lower
 
-        # Smart deletion: only flag actual cmdlet-based deletion, not variable names
-        has_real_deletion = bool(re.search(r"(?:^|\||\;)\s*(?:remove-item|ri|del|rm)\s", lower))
+        # Smart deletion: flag all destructive/irreversible system operations
+        has_real_deletion = bool(re.search(
+            r"(?:^|\||\;|\&)\s*(?:"
+            r"remove-item|ri\s|del\s|rm\s|rd\s|"
+            r"format-volume|format-disk|clear-disk|"
+            r"remove-partition|initialize-disk|"
+            r"stop-computer|restart-computer|"
+            r"clear-recyclebin|remove-computer"
+            r")\s",
+            lower,
+        ))
 
         # Pipeline safety: if the last command in a pipeline is a safe terminator,
         # the whole pipeline is read-only (e.g., Get-Process | Select-Object Name)
@@ -202,7 +211,16 @@ class PSKitKANEngine:
         )) if not has_whatif else 0.0
 
         base64_patterns = float(bool(
-            re.search(r"\[convert\]::(from|to)base64|base64", lower)
+            re.search(
+                r"\[convert\]::(from|to)base64"
+                r"|base64"
+                r"|-enc\s"
+                r"|-encodedcommand\s"
+                r"|frombase64string|tobase64string"
+                r"|::load\s*\("
+                r"|[0-9a-zA-Z+/]{30,}={0,2}",
+                lower,
+            )
         ))
 
         compression_patterns = float(bool(
