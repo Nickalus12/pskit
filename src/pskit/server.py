@@ -4,7 +4,7 @@ import json as _json
 import time as _time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, TypedDict
+from typing import Any
 
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.server.session import ServerSession
@@ -37,167 +37,51 @@ def _require() -> PSKitManager:
 
 
 def _parse(result: dict) -> dict:
-    """Return the result dict, raising on failure (becomes isError=true in MCP)."""
+    """Extract and parse the PS function's JSON output.
+
+    The manager returns: {success, output: "<JSON string>", errors, session_id, ...}
+    The PS function's actual data is inside the `output` field as a JSON string.
+    This function parses that string and returns the clean data dict.
+    """
     if result.get("success") is False:
-        raise RuntimeError(result.get("error") or result.get("errors") or "Command failed")
+        err = result.get("error") or result.get("errors") or "Command failed"
+        raise RuntimeError(err)
+    output = result.get("output", "")
+    if isinstance(output, str) and output.strip():
+        try:
+            parsed = _json.loads(output)
+            if isinstance(parsed, (dict, list)):
+                return parsed
+        except (_json.JSONDecodeError, ValueError):
+            pass
     return result
 
 
 def _text(result: dict) -> str:
-    """Return raw text output (for tools that return prose/diffs/file content)."""
+    """Return raw text from the PS function output — for diffs, file content, etc.
+
+    Same extraction as _parse but returns the string directly (or parsed output field).
+    """
     if result.get("success") is False:
-        raise RuntimeError(result.get("error") or "Command failed")
-    return result.get("output") or result.get("error") or _json.dumps(result)
+        err = result.get("error") or result.get("errors") or "Command failed"
+        raise RuntimeError(err)
+    output = result.get("output", "")
+    if isinstance(output, str) and output.strip():
+        # Try parsing JSON to get a nested "output" or "diff" field
+        try:
+            parsed = _json.loads(output)
+            if isinstance(parsed, dict):
+                # Return nested output/diff if present, otherwise the JSON string
+                return parsed.get("output") or parsed.get("diff") or output
+        except (_json.JSONDecodeError, ValueError):
+            pass
+        return output
+    return _json.dumps(result)
 
 
 # ---------------------------------------------------------------------------
 # Structured output types (auto-generates outputSchema for clients)
 # ---------------------------------------------------------------------------
-
-class FileReadResult(TypedDict):
-    success: bool
-    path: str
-    line_count: int
-    content: str
-
-class FileWriteResult(TypedDict):
-    success: bool
-    path: str
-    bytes: int
-
-class EditResult(TypedDict):
-    success: bool
-    path: str
-    replacements_made: int
-    preview: str
-
-class MoveResult(TypedDict):
-    success: bool
-    source: str
-    destination: str
-
-class DeleteResult(TypedDict):
-    success: bool
-    path: str
-
-class DirectoryResult(TypedDict):
-    success: bool
-    path: str
-    count: int
-    items: list[dict[str, Any]]
-
-class SearchMatch(TypedDict):
-    file: str
-    line: int
-    text: str
-
-class SearchResult(TypedDict):
-    success: bool
-    pattern: str
-    count: int
-    matches: list[SearchMatch]
-    engine: str
-
-class FindFilesResult(TypedDict):
-    success: bool
-    pattern: str
-    count: int
-    files: list[dict[str, Any]]
-
-class WhichResult(TypedDict):
-    found: bool
-    name: str
-    path: str | None
-    version: str | None
-
-class GitChange(TypedDict):
-    status: str
-    file: str
-
-class GitStatusResult(TypedDict):
-    success: bool
-    branch: str
-    ahead_behind: str
-    changes: list[GitChange]
-
-class GitCommit(TypedDict):
-    hash: str
-    short: str
-    message: str
-    author: str
-    date: str
-
-class GitLogResult(TypedDict):
-    success: bool
-    count: int
-    commits: list[GitCommit]
-
-class GitOpResult(TypedDict):
-    success: bool
-    output: str
-
-class GitBranchResult(TypedDict):
-    success: bool
-    branch: str
-    output: str
-
-class GitPushResult(TypedDict):
-    success: bool
-    remote: str
-    branch: str
-    output: str
-
-class PortEntry(TypedDict):
-    port: int
-    listening: bool
-    pid: int | None
-    process_name: str | None
-
-class ProcessEntry(TypedDict):
-    name: str
-    id: int
-    cpu_s: float
-    memory_mb: float
-    start_time: str
-
-class DiskResult(TypedDict):
-    success: bool
-    drive: str
-    used_gb: float
-    free_gb: float
-    total_gb: float
-
-class MemoryResult(TypedDict):
-    success: bool
-    total_gb: float
-    free_gb: float
-    used_gb: float
-
-class BuildResult(TypedDict):
-    success: bool
-    command_used: str
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_ms: int
-
-class TestResult(TypedDict):
-    success: bool
-    command_used: str
-    exit_code: int
-    passed: int
-    failed: int
-    skipped: int
-    stdout: str
-    stderr: str
-    duration_ms: int
-
-class CommandResult(TypedDict):
-    success: bool
-    exit_code: int
-    output: str
-    stderr: str
-    duration_ms: int
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +89,7 @@ class CommandResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Read File"))
-async def read_file(path: str, max_lines: int = 0) -> FileReadResult:
+async def read_file(path: str, max_lines: int = 0) -> dict[str, Any]:
     """Read a file with 1-based line numbers — call this before edit_file.
 
     Returns content with numbered lines: "    1| import os\\n    2| ..."
@@ -215,11 +99,11 @@ async def read_file(path: str, max_lines: int = 0) -> FileReadResult:
         max_lines: Read only the first N lines. 0 = entire file.
     """
     result = await _require().execute(f"Read-PSKitFile '{path}' -MaxLines {max_lines}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Read File Range"))
-async def read_file_range(path: str, start_line: int, end_line: int) -> FileReadResult:
+async def read_file_range(path: str, start_line: int, end_line: int) -> dict[str, Any]:
     """Read a specific line range from a file — efficient for large files.
 
     Args:
@@ -230,11 +114,11 @@ async def read_file_range(path: str, start_line: int, end_line: int) -> FileRead
     result = await _require().execute(
         f"Read-PSKitFileRange '{path}' -StartLine {start_line} -EndLine {end_line}"
     )
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(idempotentHint=True, title="Write File"))
-async def write_file(path: str, content: str) -> FileWriteResult:
+async def write_file(path: str, content: str) -> dict[str, Any]:
     """Write content to a file, creating parent directories as needed.
 
     Args:
@@ -243,12 +127,12 @@ async def write_file(path: str, content: str) -> FileWriteResult:
     """
     escaped = content.replace("'", "''")
     result = await _require().execute(f"Write-PSKitFile '{path}' '{escaped}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Edit File"))
 async def edit_file(path: str, old_text: str, new_text: str,
-                    regex: bool = False, replace_all: bool = False) -> EditResult:
+                    regex: bool = False, replace_all: bool = False) -> dict[str, Any]:
     """Replace old_text with new_text in a file — surgical find-and-replace.
 
     If replacements_made is 0, old_text was not found — re-read the file first.
@@ -264,18 +148,18 @@ async def edit_file(path: str, old_text: str, new_text: str,
     new_e = new_text.replace("'", "''")
     flags = (" -Regex" if regex else "") + (" -All" if replace_all else "")
     result = await _require().execute(f"Edit-PSKitFile '{path}' '{old_e}' '{new_e}'{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Move File"))
-async def move_file(source: str, destination: str) -> MoveResult:
+async def move_file(source: str, destination: str) -> dict[str, Any]:
     """Move or rename a file or directory. Creates parent directories as needed."""
     result = await _require().execute(f"Move-PSKitFile '{source}' '{destination}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, title="Delete File"))
-async def delete_file(path: str, recurse: bool = False) -> DeleteResult:
+async def delete_file(path: str, recurse: bool = False) -> dict[str, Any]:
     """Delete a file or directory. Not reversible.
 
     Args:
@@ -284,7 +168,7 @@ async def delete_file(path: str, recurse: bool = False) -> DeleteResult:
     """
     flags = " -Recurse" if recurse else ""
     result = await _require().execute(f"Remove-PSKitFile '{path}'{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(idempotentHint=True, title="Create Directory"))
@@ -295,7 +179,7 @@ async def create_directory(path: str) -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="List Directory"))
-async def list_directory(path: str = ".", recurse: bool = False) -> DirectoryResult:
+async def list_directory(path: str = ".", recurse: bool = False) -> dict[str, Any]:
     """List directory contents with name, type, size, and modified time.
 
     Args:
@@ -304,7 +188,7 @@ async def list_directory(path: str = ".", recurse: bool = False) -> DirectoryRes
     """
     flags = " -Recurse" if recurse else ""
     result = await _require().execute(f"Get-PSKitDirectoryListing '{path}'{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Diff Files"))
@@ -320,7 +204,7 @@ async def diff_files(path1: str, path2: str) -> str:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Search Code"))
 async def search_code(pattern: str, path: str = ".", include: str = "*.*",
-                      max_results: int = 50, context: int = 0) -> SearchResult:
+                      max_results: int = 50, context: int = 0) -> dict[str, Any]:
     """Search for a pattern across files — ripgrep-powered, regex supported.
 
     Args:
@@ -334,11 +218,11 @@ async def search_code(pattern: str, path: str = ".", include: str = "*.*",
         f"Search-PSKitCode '{pattern}' -Path '{path}' -Include '{include}' "
         f"-MaxResults {max_results} -Context {context}"
     )
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Find Files"))
-async def find_files(pattern: str, path: str = ".", max_results: int = 100) -> FindFilesResult:
+async def find_files(pattern: str, path: str = ".", max_results: int = 100) -> dict[str, Any]:
     """Find files by glob pattern — ripgrep-fast when available.
 
     Args:
@@ -349,11 +233,11 @@ async def find_files(pattern: str, path: str = ".", max_results: int = 100) -> F
     result = await _require().execute(
         f"Find-PSKitFiles '{pattern}' -Path '{path}' -MaxResults {max_results}"
     )
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Run Command"))
-async def run_command(script: str, ctx: Context[ServerSession, None]) -> CommandResult:
+async def run_command(script: str, ctx: Context[ServerSession, None]) -> dict[str, Any]:
     """Run an arbitrary PowerShell script through the 5-tier safety pipeline.
 
     Reports progress while the command executes.
@@ -365,7 +249,7 @@ async def run_command(script: str, ctx: Context[ServerSession, None]) -> Command
     await ctx.report_progress(progress=0.0, total=1.0, message="Submitting to safety pipeline")
     result = await _require().execute(f"Invoke-PSKitCommand '{script.replace(chr(39), chr(39)*2)}'")
     await ctx.report_progress(progress=1.0, total=1.0, message="Complete")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -386,14 +270,14 @@ async def get_env_vars(filter: str = "") -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Which"))
-async def which(name: str) -> WhichResult:
+async def which(name: str) -> dict[str, Any]:
     """Check if a binary is on PATH — returns location and version.
 
     Args:
         name: Binary name e.g. "python", "node", "rg", "ollama".
     """
     result = await _require().execute(f"Get-PSKitWhich '{name}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Install Package"))
@@ -419,14 +303,14 @@ async def install_package(name: str, manager: str = "", version: str = "") -> di
 # ---------------------------------------------------------------------------
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Git Status"))
-async def git_status() -> GitStatusResult:
+async def git_status() -> dict[str, Any]:
     """Get the current git working tree status.
 
     Returns branch name, ahead/behind count, and all changed files with status codes.
     Status codes: M=modified, A=added, D=deleted, R=renamed, ??=untracked.
     """
     result = await _require().execute("Get-PSKitGitStatus")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Git Diff"))
@@ -446,7 +330,7 @@ async def git_diff(path: str = "", staged: bool = False) -> str:
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Git Log"))
 async def git_log(limit: int = 20, path: str = "", since: str = "",
-                  until: str = "", author: str = "") -> GitLogResult:
+                  until: str = "", author: str = "") -> dict[str, Any]:
     """Show git commit history as structured data — newest first.
 
     Args:
@@ -466,11 +350,11 @@ async def git_log(limit: int = 20, path: str = "", since: str = "",
     if author:
         flags += f" -Author '{author}'"
     result = await _require().execute(f"Get-PSKitGitLog{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, idempotentHint=False, title="Git Commit"))
-async def git_commit(message: str) -> GitOpResult:
+async def git_commit(message: str) -> dict[str, Any]:
     """Stage all changes and create a commit.
 
     Args:
@@ -478,11 +362,11 @@ async def git_commit(message: str) -> GitOpResult:
     """
     escaped = message.replace("'", "''")
     result = await _require().execute(f"New-PSKitGitCommit '{escaped}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Git Branch"))
-async def git_branch(name: str, switch: bool = True) -> GitBranchResult:
+async def git_branch(name: str, switch: bool = True) -> dict[str, Any]:
     """Create a new git branch.
 
     Args:
@@ -491,22 +375,22 @@ async def git_branch(name: str, switch: bool = True) -> GitBranchResult:
     """
     flags = " -Switch" if switch else ""
     result = await _require().execute(f"New-PSKitGitBranch '{name}'{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Git Checkout"))
-async def git_checkout(ref: str) -> GitOpResult:
+async def git_checkout(ref: str) -> dict[str, Any]:
     """Switch to an existing branch or ref.
 
     Args:
         ref: Branch name, tag, or commit hash.
     """
     result = await _require().execute(f"Switch-PSKitGitBranch '{ref}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(destructiveHint=True, title="Git Push"))
-async def git_push(remote: str = "origin", branch: str = "") -> GitPushResult:
+async def git_push(remote: str = "origin", branch: str = "") -> dict[str, Any]:
     """Push the current branch to a remote.
 
     Args:
@@ -517,7 +401,7 @@ async def git_push(remote: str = "origin", branch: str = "") -> GitPushResult:
     if branch:
         flags += f" -Branch '{branch}'"
     result = await _require().execute(f"Push-PSKitGit{flags}")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Git Blame"))
@@ -538,18 +422,18 @@ async def git_blame(path: str, start_line: int = 0, end_line: int = 0) -> list[d
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Git Stash"))
-async def git_stash(message: str = "pskit auto-stash") -> GitOpResult:
+async def git_stash(message: str = "pskit auto-stash") -> dict[str, Any]:
     """Save current working tree changes to the git stash."""
     escaped = message.replace("'", "''")
     result = await _require().execute(f"Save-PSKitGitStash '{escaped}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Git Stash Pop"))
-async def git_stash_pop() -> GitOpResult:
+async def git_stash_pop() -> dict[str, Any]:
     """Restore the most recently stashed changes."""
     result = await _require().execute("Restore-PSKitGitStash")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -567,21 +451,21 @@ async def gpu_status() -> dict[str, Any]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Disk Usage"))
-async def disk_usage(path: str = ".") -> DiskResult:
+async def disk_usage(path: str = ".") -> dict[str, Any]:
     """Get disk space for the drive containing a path.
 
     Args:
         path: Any path on the drive to inspect. Default: current directory.
     """
     result = await _require().execute(f"Get-PSKitDiskUsage '{path}'")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Memory Usage"))
-async def memory_usage() -> MemoryResult:
+async def memory_usage() -> dict[str, Any]:
     """Get system RAM usage: total, free, and used in GB."""
     result = await _require().execute("Get-PSKitMemoryUsage")
-    return _parse(result)  # type: ignore[return-value]
+    return _parse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -589,7 +473,7 @@ async def memory_usage() -> MemoryResult:
 # ---------------------------------------------------------------------------
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Port Status"))
-async def port_status(ports: str = "") -> list[PortEntry]:
+async def port_status(ports: str = "") -> list[dict[str, Any]]:
     """Check which TCP ports are listening and which processes own them.
 
     Args:
@@ -607,7 +491,7 @@ async def port_status(ports: str = "") -> list[PortEntry]:
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Process Info"))
-async def process_info(name: str = "", pid: int = -1, include_threads: bool = False) -> list[ProcessEntry]:
+async def process_info(name: str = "", pid: int = -1, include_threads: bool = False) -> list[dict[str, Any]]:
     """Get information about running processes. Default: top 20 by CPU.
 
     Args:
@@ -650,7 +534,7 @@ async def http_request(uri: str, method: str = "GET", body: str = "", timeout_se
 # ---------------------------------------------------------------------------
 
 @mcp.tool(annotations=ToolAnnotations(title="Build Project"))
-async def build_project(command: str = "", ctx: Context[ServerSession, None] = None) -> BuildResult:  # type: ignore[assignment]
+async def build_project(command: str = "", ctx: Context[ServerSession, None] = None) -> dict[str, Any]:
     """Run the project build — auto-detects build system with progress reporting.
 
     Returns structured result: success, exit_code, stdout, stderr, duration_ms.
@@ -672,12 +556,12 @@ async def build_project(command: str = "", ctx: Context[ServerSession, None] = N
     if ctx:
         status = "Build succeeded" if parsed.get("success") else "Build failed"
         await ctx.report_progress(progress=1.0, total=1.0, message=status)
-    return parsed  # type: ignore[return-value]
+    return parsed
 
 
 @mcp.tool(annotations=ToolAnnotations(title="Test Project"))
 async def test_project(filter_expr: str = "", command: str = "",
-                       ctx: Context[ServerSession, None] = None) -> TestResult:  # type: ignore[assignment]
+                       ctx: Context[ServerSession, None] = None) -> dict[str, Any]:
     """Run the project test suite with progress reporting.
 
     Returns structured result: success, passed, failed, skipped, exit_code, stdout, stderr, duration_ms.
@@ -705,7 +589,7 @@ async def test_project(filter_expr: str = "", command: str = "",
         f = parsed.get("failed", 0)
         await ctx.report_progress(progress=1.0, total=1.0,
                                    message=f"{p} passed, {f} failed")
-    return parsed  # type: ignore[return-value]
+    return parsed
 
 
 # ---------------------------------------------------------------------------
