@@ -830,9 +830,12 @@ class PSKitManager:
         if requires_gemma:
             logger.info("Elevated command '%s' detected — forcing Gemma safety review", elevated_match)
 
-        # --- Path Safety Check ---
+        # --- Path Safety Check (writes only — reads are always safe) ---
         path_start = time.monotonic()
-        path_safe = self._check_path_safety(script) if cached_verdict is None else True
+        if is_readonly:
+            path_safe = True  # reads never blocked by path check
+        else:
+            path_safe = self._check_path_safety(script) if cached_verdict is None else True
         safety_timing["path_check_ms"] = int((time.monotonic() - path_start) * 1000)
         if not path_safe:
             return {
@@ -1152,7 +1155,7 @@ class PSKitManager:
         if dangerous:
             return {"success": False, "errors": f"Dangerous command blocked: '{dangerous}'", "output": "", "command": script}
 
-        if not self._check_path_safety(script):
+        if not is_readonly and not self._check_path_safety(script):
             return {"success": False, "errors": "Path safety check failed", "output": "", "command": script}
 
         skip_gemma = (
