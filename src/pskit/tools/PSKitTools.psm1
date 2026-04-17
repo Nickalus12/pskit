@@ -531,6 +531,7 @@ function Invoke-PSKitHttpRequest {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory, Position = 0)]
+        [Alias('Url')]
         [string]$Uri,
         [string]$Method = 'GET',
         [hashtable]$Headers = @{},

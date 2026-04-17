@@ -486,7 +486,8 @@ async def port_status(ports: str = "") -> list[dict[str, Any]]:
 
     Args:
         ports: Comma-separated port numbers e.g. "8080,5432,11434".
-               Empty = default dev set (8080, 11434, 5432, 3000, 8000, etc.).
+               Empty string uses a common dev-service default set; pass
+               explicit ports for deterministic audits.
     """
     if ports:
         port_list = ",".join(p.strip() for p in ports.split(","))
@@ -523,7 +524,7 @@ async def process_info(name: str = "", pid: int = -1, include_threads: bool = Fa
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=True, title="HTTP Request"))
-async def http_request(uri: str, method: str = "GET", body: str = "", timeout_sec: int = 30) -> dict[str, Any]:
+async def http_request(uri: str = "", method: str = "GET", body: str = "", timeout_sec: int = 30, url: str = "") -> dict[str, Any]:
     """Make an HTTP request to localhost or private network addresses only.
 
     Returns status_code, body, headers, elapsed_ms.
@@ -534,6 +535,10 @@ async def http_request(uri: str, method: str = "GET", body: str = "", timeout_se
         body: Request body for POST/PUT/PATCH.
         timeout_sec: Timeout in seconds.
     """
+    if not uri and url:
+        uri = url
+    if not uri:
+        raise ValueError("http_request requires uri (or url)")
     escaped_body = body.replace("'", "''")
     cmd = f"Invoke-PSKitHttpRequest '{uri}' -Method '{method}' -Body '{escaped_body}' -TimeoutSec {timeout_sec}"
     result = await _require().execute(cmd)
