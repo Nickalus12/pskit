@@ -1,6 +1,7 @@
 """PSKit MCP server — 38 tools with annotations, structured output, and progress reporting."""
 
 import json as _json
+import re as _re
 import time as _time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -36,6 +37,11 @@ def _require() -> PSKitManager:
     return _manager
 
 
+# Strip ANSI/VT100 mode-control sequences — pwsh on Linux emits these to
+# stdout when the line discipline isn't a TTY, prefixing every JSON payload.
+_ANSI_RE = _re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[PX^_][^\x1b]*\x1b\\|\][^\x07]*(?:\x07|\x1b\\)|[@-Z\\-_])")
+
+
 def _parse(result: dict) -> dict:
     """Extract and parse the PS function's JSON output.
 
@@ -48,8 +54,9 @@ def _parse(result: dict) -> dict:
         raise RuntimeError(err)
     output = result.get("output", "")
     if isinstance(output, str) and output.strip():
+        cleaned = _ANSI_RE.sub("", output).strip()
         try:
-            parsed = _json.loads(output)
+            parsed = _json.loads(cleaned)
             if isinstance(parsed, (dict, list)):
                 return parsed
         except (_json.JSONDecodeError, ValueError):
@@ -67,9 +74,10 @@ def _text(result: dict) -> str:
         raise RuntimeError(err)
     output = result.get("output", "")
     if isinstance(output, str) and output.strip():
+        cleaned = _ANSI_RE.sub("", output).strip()
         # Try parsing JSON to get a nested "output" or "diff" field
         try:
-            parsed = _json.loads(output)
+            parsed = _json.loads(cleaned)
             if isinstance(parsed, dict):
                 # Return nested output/diff if present, otherwise the JSON string
                 return parsed.get("output") or parsed.get("diff") or output
@@ -487,7 +495,10 @@ async def port_status(ports: str = "") -> list[dict[str, Any]]:
         cmd = "Get-PSKitPortStatus"
     result = await _require().execute(cmd)
     parsed = _parse(result)
-    return parsed if isinstance(parsed, list) else parsed.get("output", [])
+    if isinstance(parsed, list):
+        return parsed
+    # Cross-platform Get-PSKitPortStatus returns { success, ports, platform }
+    return parsed.get("ports", parsed.get("output", []))
 
 
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True, title="Process Info"))
