@@ -1,3 +1,12 @@
+## [0.3.3] - 2026-04-17
+
+### Fixed
+
+- `pskit.__version__` now reads from `importlib.metadata.version("pskit-mcp")` instead of a hardcoded `0.1.0` string. `pskit version` and the splash banner now always match the installed release.
+- `Invoke-PSKitHttpRequest` accepts `-Url` as an alias for `-Uri` on the PowerShell side.
+- The `http_request` MCP tool accepts both `uri` and `url` arguments, with a clear error if neither is provided. Matches the common naming convention agents default to.
+- Clarified `port_status` docstring — the literal default-port list was misleading.
+
 ## [0.3.2] - 2026-04-17
 
 ### Fixed
