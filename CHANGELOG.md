@@ -1,3 +1,10 @@
+## [0.3.2] - 2026-04-17
+
+### Fixed
+
+- **ANSI escape codes in tool output on Linux**: pwsh on Linux emits VT100 mode-control sequences (`ESC [?1h` / `ESC [?1l`) to stdout when the line discipline is not a TTY. These prefixed every JSON payload from a PSKit tool, causing `json.loads` in `_parse` to fail silently and callers to receive the raw wrapper dict instead of parsed data. List-returning tools (`port_status`, `process_info`) failed FastMCP output validation. Fix: strip ANSI CSI/OSC sequences before JSON decoding in `_parse` and `_text`.
+- `port_status` now unwraps the cross-platform `{ success, ports, platform }` response shape introduced in v0.3.0. Previously the handler only looked for the legacy `output` key.
+
 ## [0.3.1] - 2026-04-17
 
 ### Fixed
