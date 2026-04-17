@@ -9,7 +9,7 @@
 
 PSKit is a [Model Context Protocol](https://modelcontextprotocol.io) server that gives AI agents **38 PowerShell tools** backed by a **5-tier neural safety pipeline**. Every command passes through a KAN (Kolmogorov-Arnold Network) neural scorer before execution — catching dangerous patterns in under 1 millisecond.
 
-Works with **Claude Desktop**, **Claude Code**, **Cursor**, **Windsurf**, and any MCP-compatible client on Windows.
+Works on **Windows**, **Linux**, and **macOS** with any MCP-compatible client: Claude Desktop, Claude Code, Cursor, Windsurf, Continue.dev, and more.
 
 ---
 
@@ -34,13 +34,31 @@ pip install "pskit-mcp[http]"
 pskit serve --http --port 8000
 ```
 
+### Platform support
+
+| OS | Install PowerShell 7 | Notes |
+|---|---|---|
+| Windows 10/11 | ships pre-installed or `winget install Microsoft.PowerShell` | full feature set |
+| Ubuntu / Debian | [Microsoft apt repo](https://learn.microsoft.com/en-us/powershell/scripting/install/install-ubuntu) → `sudo apt-get install powershell` | ✅ |
+| Fedora / RHEL | `sudo dnf install powershell` (after MS repo setup) | ✅ |
+| Arch Linux | `yay -S powershell-bin` | ✅ |
+| macOS | `brew install --cask powershell` | ✅ |
+
+On Linux and macOS the system-info tools use native POSIX sources:
+`/proc/meminfo` (Linux) or `sysctl`+`vm_stat` (macOS) for memory,
+`df` for disks, `ss -tlnp` (Linux) or `lsof` (macOS) for open ports.
+Package installer auto-detects `apt`, `dnf`, `pacman`, and `brew` alongside
+`pip`, `npm`, `cargo`, and `winget`.
+
 ---
 
 ## Quick Start
 
 ### Claude Desktop
 
-Add to `%APPDATA%\Claude\claude_desktop_config.json`:
+Add to `%APPDATA%\Claude\claude_desktop_config.json` (Windows),
+`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS),
+or `~/.config/Claude/claude_desktop_config.json` (Linux):
 
 ```json
 {
@@ -49,12 +67,16 @@ Add to `%APPDATA%\Claude\claude_desktop_config.json`:
       "command": "uvx",
       "args": ["pskit-mcp"],
       "env": {
-        "PSKIT_ALLOWED_ROOT": "C:\\Your\\Projects"
+        "PSKIT_ALLOWED_ROOT": "/home/you/projects"
       }
     }
   }
 }
 ```
+
+Replace `PSKIT_ALLOWED_ROOT` with your project root:
+`C:\Your\Projects` on Windows, `/home/you/projects` on Linux,
+`/Users/you/projects` on macOS.
 
 ### Claude Code
 
@@ -76,7 +98,7 @@ PSKit Doctor
 | ripgrep (rg)              |  OK  | ripgrep 14.1.0 -- fast search active     |
 | nvidia-smi                | WARN | not found -- gpu_status returns error    |
 | Ollama                    |  OK  | running at localhost:11434               |
-| Allowed root              |  OK  | C:\Projects\myapp                       |
+| Allowed root              |  OK  | /home/you/projects/myapp  (or C:\... on Windows)  |
 | KAN model                 | WARN | no trained weights -- heuristic active  |
 +---------------------------+------+------------------------------------------+
 ```

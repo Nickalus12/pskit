@@ -51,6 +51,10 @@ packages = ["src/pskit"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests that spawn a real pwsh process (run with `-m integration`)",
+]
+addopts = "-m 'not integration'"
 
 [tool.ruff]
 line-length = 100

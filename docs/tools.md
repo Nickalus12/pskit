@@ -1,8 +1,8 @@
 # PSKit MCP — Tool Reference
 
-This document is the complete developer reference for all 19 PSKit MCP tools. Each entry covers parameters, return format, and a working example.
+This document is the complete developer reference for all 33 PSKit MCP tools. All tools run cross-platform on Windows, Linux, and macOS via PowerShell 7. Each entry covers parameters, return format, and a working example.
 
-All tools return a JSON string. On success, the top-level `success` field is `true`. On failure it is `false` and an `error` field describes the problem.
+All tools return a JSON string. On success, the top-level `success` field is `true`. On failure it is `false` and an `error` field describes the problem. Path parameters accept native paths for the current OS: `C:\Projects\app` on Windows, `/home/you/app` on Linux, `/Users/you/app` on macOS.
 
 ---
 
@@ -446,6 +446,13 @@ Get disk space statistics for the drive containing the given path.
 disk_usage(path="C:\\")
 ```
 
+**Cross-platform behaviour**
+
+Returns an additional `platform` field and, on POSIX, a `mount` field (filesystem mount point).
+Uses `df -Pk` on Linux and macOS; `Get-PSDrive` on Windows. The `drive` field is a drive letter
+on Windows and the filesystem identifier (e.g. `overlay`, `/dev/nvme0n1p2`) on POSIX.
+
+
 ---
 
 ### `memory_usage`
@@ -472,6 +479,13 @@ None.
 ```
 memory_usage()
 ```
+
+**Cross-platform behaviour**
+
+Returns an additional `platform` field (`"windows"` / `"linux"` / `"macos"`).
+Uses `/proc/meminfo` on Linux (MemAvailable when present, else MemFree+Buffers+Cached),
+`sysctl hw.memsize` + `vm_stat` on macOS, and `Win32_OperatingSystem` (CIM) on Windows.
+
 
 ---
 
@@ -512,6 +526,13 @@ port_status()
 ```
 port_status(ports="3000,4000,8080")
 ```
+
+**Cross-platform behaviour**
+
+Returns an additional `platform` field. Uses `ss -tlnp` on Linux (falls back to `/proc/net/tcp`
+without process names when `ss` is missing), `lsof -nP -iTCP -sTCP:LISTEN` on macOS, and
+`Get-NetTCPConnection` on Windows.
+
 
 ---
 
@@ -560,6 +581,12 @@ process_info(name="python")
 ```
 process_info(pid=4892, include_threads=True)
 ```
+
+**Cross-platform behaviour**
+
+On Linux and macOS the `.Responding` and per-thread `ThreadState` properties of
+`System.Diagnostics.Process` are unavailable; those fields return `null` instead of raising.
+
 
 ---
 
@@ -734,4 +761,4 @@ print(data["line_count"])
 - `write_file`, `edit_file`, `git_commit`, `build_project`, and `test_project` are write operations. They invalidate the read-only result cache on success.
 - `http_request` is network-restricted to localhost and RFC-1918 ranges. External URIs are rejected before the request is sent.
 - All tools pass through the 5-tier KAN neural safety pipeline. Commands classified as `blocked` by the KAN scorer or the dangerous-command blocklist are rejected before any PowerShell process is involved.
-- The `PSKIT_ALLOWED_ROOT` environment variable enforces a filesystem boundary. Any command referencing an absolute Windows path outside that boundary is rejected by Tier 4.
+- The `PSKIT_ALLOWED_ROOT` environment variable enforces a filesystem boundary. Any write operation targeting an absolute path outside that boundary is rejected by Tier 4. This applies equally to Windows (`C:\...`), Linux (`/home/...`), and macOS (`/Users/...`) paths.

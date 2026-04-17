@@ -8,11 +8,12 @@ on:
 
 jobs:
   test:
-    name: Test Python ${{ matrix.python-version }}
-    runs-on: windows-latest
+    name: Test ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
         python-version: ["3.11", "3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -21,13 +22,19 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Cache pip
+      - name: Cache pip (Windows)
+        if: runner.os == 'Windows'
         uses: actions/cache@v4
         with:
           path: ~\AppData\Local\pip\Cache
           key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ matrix.python-version }}-
+
+      - name: Cache pip (POSIX)
+        if: runner.os != 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ matrix.python-version }}-${{ hashFiles('pyproject.toml') }}
 
       - name: Install dependencies
         run: pip install -e ".[dev]"
@@ -35,5 +42,35 @@ jobs:
       - name: Lint
         run: ruff check src/
 
-      - name: Test
+      - name: Test (unit, mock-based)
         run: python -m pytest tests/ -q
+
+      # ── Cross-platform integration tests that require a real pwsh process ──
+      - name: Install PowerShell 7 (Ubuntu)
+        if: runner.os == 'Linux'
+        run: |
+          source /etc/os-release
+          wget -q "https://packages.microsoft.com/config/ubuntu/$VERSION_ID/packages-microsoft-prod.deb" -O /tmp/ms.deb
+          sudo dpkg -i /tmp/ms.deb
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq powershell
+
+      - name: Install PowerShell 7 (macOS)
+        if: runner.os == 'macOS'
+        run: brew install --cask powershell
+
+      # Windows runners ship with PowerShell 5.1; install pwsh 7 for parity
+      - name: Install PowerShell 7 (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Get-Command pwsh -ErrorAction SilentlyContinue)) {
+            winget install --id Microsoft.PowerShell --silent --accept-package-agreements --accept-source-agreements
+          }
+
+      - name: Verify pwsh available
+        shell: bash
+        run: pwsh -Version
+
+      - name: Integration tests (real pwsh)
+        run: python -m pytest tests/ -q -m integration
