@@ -57,7 +57,7 @@ jobs:
 
       - name: Install PowerShell 7 (macOS)
         if: runner.os == 'macOS'
-        run: brew install --cask powershell
+        run: brew install powershell
 
       # Windows runners ship with PowerShell 5.1; install pwsh 7 for parity
       - name: Install PowerShell 7 (Windows)
