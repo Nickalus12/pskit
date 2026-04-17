@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import struct
 import time
@@ -12,6 +13,11 @@ from pathlib import Path
 from typing import Any
 
 from pskit.kan_engine import PSKitKANEngine
+
+# Named-pipe session mode uses Windows-specific asyncio.create_pipe_connection,
+# so it only works on Windows. On Linux/macOS we skip straight to the
+# stdin/stdout protocol to avoid a 15s PIPE_READY timeout per session.
+_NAMED_PIPE_SUPPORTED = platform.system() == 'Windows'
 
 # Lightweight built-in counters
 _counters: dict[str, int] = {}
@@ -562,8 +568,11 @@ class PSKitManager:
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Try named-pipe session first (fast path)
-        pipe_client, drain_task = await self._try_pipe_session(proc, session_id)
+        # Try named-pipe session first (fast path on Windows only)
+        if _NAMED_PIPE_SUPPORTED:
+            pipe_client, drain_task = await self._try_pipe_session(proc, session_id)
+        else:
+            pipe_client, drain_task = None, None
         if pipe_client is None:
             # Fall back to legacy stdin/stdout marker protocol
             await self._init_legacy_session(proc, session_id)
