@@ -1,3 +1,9 @@
+## [0.3.1] - 2026-04-17
+
+### Fixed
+
+- **Performance**: On Linux and macOS, skip the Windows-only named-pipe session path entirely. Previously every PowerShell session waited 15 s for a `PIPE_READY` marker that could never arrive, then fell back to stdin/stdout mode. Pool pre-warm dropped from ~45 s to ~2 s; per-call overhead dropped from >15 s to <1 s on POSIX. Windows behaviour unchanged.
+
 ## [0.3.0] — 2026-04-17
 
 ### Added
