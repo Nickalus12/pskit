@@ -47,6 +47,9 @@ _READONLY_PREFIXES: frozenset[str] = frozenset({
     "git status",
     "git show",
     "git branch",
+    # ─ Linux/macOS read-only utilities ─
+    "ls ", "cat ", "head ", "tail ", "ps ", "df ", "du ", "free",
+    "uname", "whoami", "pwd", "which ", "find ", "grep ",
 })
 
 logger = logging.getLogger(__name__)
@@ -60,6 +63,32 @@ _DANGEROUS_COMMANDS: frozenset[str] = frozenset({
     "Clear-RecycleBin",
     "rm -rf",
     "del /s /q C:\\",
+
+    # ─ Linux / macOS destructive patterns ─
+    'rm -rf /',
+    'rm -rf /*',
+    'rm -rf ~',
+    'rm -rf $HOME',
+    'dd if=/dev/zero',
+    'dd if=/dev/random of=/dev',
+    'mkfs',
+    ': () { : | : & }; :',
+    ':(){:|:&};:',
+    'chmod -R 777 /',
+    'chown -R',
+    '> /dev/sda',
+    'mv /* /dev/null',
+    'wget -O- | sh',
+    'curl | sh',
+    'curl | bash',
+    'shutdown',
+    'halt',
+    'poweroff',
+    'reboot',
+    'init 0',
+    'init 6',
+    'systemctl poweroff',
+    'systemctl reboot',
 })
 
 _ELEVATED_REVIEW_COMMANDS: frozenset[str] = frozenset({
