@@ -212,6 +212,34 @@ function Get-PSKitGpuStatus {
 function Get-PSKitDiskUsage {
     [CmdletBinding()]
     param([string]$Path = ".")
+
+    if ($IsLinux -or $IsMacOS) {
+        try {
+            $abs = (Resolve-Path $Path -ErrorAction Stop).Path
+            # POSIX `df -Pk` gives us stable columns: Filesystem | 1024-blocks | Used | Available | Capacity | Mounted on
+            $lines = df -Pk $abs 2>$null
+            if ($LASTEXITCODE -ne 0 -or $lines.Count -lt 2) {
+                return @{ success = $false; error = "df failed for $abs" } | ConvertTo-Json -Compress
+            }
+            $parts = ($lines[1] -split '\s+')
+            $total_kb = [long]$parts[1]
+            $used_kb  = [long]$parts[2]
+            $free_kb  = [long]$parts[3]
+            return @{
+                success = $true
+                drive = $parts[0]
+                mount = $parts[-1]
+                used_gb  = [math]::Round($used_kb / 1MB, 2)
+                free_gb  = [math]::Round($free_kb / 1MB, 2)
+                total_gb = [math]::Round($total_kb / 1MB, 2)
+                platform = if ($IsLinux) { 'linux' } else { 'macos' }
+            } | ConvertTo-Json -Compress
+        } catch {
+            return @{ success = $false; error = $_.Exception.Message } | ConvertTo-Json -Compress
+        }
+    }
+
+    # Windows path
     $drive = (Get-Item $Path).PSDrive
     $info = Get-PSDrive -Name $drive.Name
     @{
@@ -220,23 +248,75 @@ function Get-PSKitDiskUsage {
         used_gb = [math]::Round($info.Used / 1GB, 2)
         free_gb = [math]::Round($info.Free / 1GB, 2)
         total_gb = [math]::Round(($info.Used + $info.Free) / 1GB, 2)
+        platform = 'windows'
     } | ConvertTo-Json -Compress
 }
 
 function Get-PSKitMemoryUsage {
     [CmdletBinding()]
     param()
+
+    if ($IsLinux) {
+        try {
+            $meminfo = Get-Content '/proc/meminfo' -ErrorAction Stop
+            $kv = @{}
+            foreach ($line in $meminfo) {
+                if ($line -match '^(\w+):\s+(\d+)\s+kB') { $kv[$Matches[1]] = [long]$Matches[2] }
+            }
+            $total_kb = $kv['MemTotal']
+            # MemAvailable is the right "free" metric on modern kernels (>=3.14)
+            $avail_kb = if ($kv.ContainsKey('MemAvailable')) { $kv['MemAvailable'] } else { $kv['MemFree'] + $kv['Buffers'] + $kv['Cached'] }
+            return @{
+                success = $true
+                total_gb = [math]::Round($total_kb / 1MB, 2)
+                free_gb  = [math]::Round($avail_kb / 1MB, 2)
+                used_gb  = [math]::Round(($total_kb - $avail_kb) / 1MB, 2)
+                platform = 'linux'
+            } | ConvertTo-Json -Compress
+        } catch {
+            return @{ success = $false; error = "Unable to read /proc/meminfo: $($_.Exception.Message)" } | ConvertTo-Json -Compress
+        }
+    }
+
+    if ($IsMacOS) {
+        try {
+            $totalBytes = [long](sysctl -n hw.memsize)
+            # vm_stat reports pages; default page size is 16384 on Apple Silicon, 4096 elsewhere
+            $pageSize = [long](sysctl -n hw.pagesize)
+            $vm = vm_stat
+            $free_p = 0L; $active_p = 0L; $inactive_p = 0L; $wired_p = 0L; $spec_p = 0L
+            foreach ($line in $vm) {
+                if ($line -match 'Pages free:\s+(\d+)')              { $free_p = [long]$Matches[1] }
+                elseif ($line -match 'Pages active:\s+(\d+)')        { $active_p = [long]$Matches[1] }
+                elseif ($line -match 'Pages inactive:\s+(\d+)')      { $inactive_p = [long]$Matches[1] }
+                elseif ($line -match 'Pages wired down:\s+(\d+)')    { $wired_p = [long]$Matches[1] }
+                elseif ($line -match 'Pages speculative:\s+(\d+)')   { $spec_p = [long]$Matches[1] }
+            }
+            $free_bytes = ($free_p + $inactive_p + $spec_p) * $pageSize
+            return @{
+                success = $true
+                total_gb = [math]::Round($totalBytes / 1GB, 2)
+                free_gb  = [math]::Round($free_bytes / 1GB, 2)
+                used_gb  = [math]::Round(($totalBytes - $free_bytes) / 1GB, 2)
+                platform = 'macos'
+            } | ConvertTo-Json -Compress
+        } catch {
+            return @{ success = $false; error = "Unable to query macOS memory: $($_.Exception.Message)" } | ConvertTo-Json -Compress
+        }
+    }
+
+    # Windows path (original implementation)
     $os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction SilentlyContinue
     if ($os) {
-        @{
+        return @{
             success = $true
             total_gb = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
-            free_gb = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
-            used_gb = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)
+            free_gb  = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
+            used_gb  = [math]::Round(($os.TotalVisibleMemorySize - $os.FreePhysicalMemory) / 1MB, 2)
+            platform = 'windows'
         } | ConvertTo-Json -Compress
-    } else {
-        @{ success = $false; error = "Unable to query memory info" } | ConvertTo-Json -Compress
     }
+    @{ success = $false; error = "Unable to query memory info on this platform" } | ConvertTo-Json -Compress
 }
 
 # ─── Build & Test ───────────────────────────────────────────────
@@ -370,6 +450,64 @@ function Get-PSKitPortStatus {
     param(
         [int[]]$Ports = @(8080, 8443, 11434, 7474, 7687, 5432, 3000, 3001, 8000, 9000)
     )
+
+    if ($IsLinux -or $IsMacOS) {
+        # Build a lookup of listening ports -> pid/process via `ss` (Linux) or `lsof` (macOS)
+        $portMap = @{}
+        if ($IsLinux) {
+            $ssCmd = Get-Command ss -ErrorAction SilentlyContinue
+            if ($ssCmd) {
+                $raw = ss -tlnp 2>$null
+                foreach ($line in $raw) {
+                    # State  Recv-Q Send-Q  Local Address:Port   Peer...  users:(("proc",pid=1234,fd=5))
+                    if ($line -match ':(\d+)\s+\S+\s+.*users:\(\("([^"]+)",pid=(\d+)') {
+                        $portMap[[int]$Matches[1]] = @{ pid = [int]$Matches[3]; name = $Matches[2] }
+                    } elseif ($line -match ':(\d+)\s') {
+                        if (-not $portMap.ContainsKey([int]$Matches[1])) { $portMap[[int]$Matches[1]] = @{ pid = $null; name = $null } }
+                    }
+                }
+            } else {
+                # Fall back to /proc/net/tcp — pid lookup requires matching inodes to /proc/<pid>/fd; skip process names
+                try {
+                    $tcp = Get-Content '/proc/net/tcp'
+                    foreach ($line in $tcp | Select-Object -Skip 1) {
+                        $tokens = ($line.Trim() -split '\s+')
+                        if ($tokens[3] -eq '0A') {   # 0A = LISTEN
+                            $hexPort = ($tokens[1] -split ':')[1]
+                            $portMap[[Convert]::ToInt32($hexPort, 16)] = @{ pid = $null; name = $null }
+                        }
+                    }
+                } catch {}
+            }
+        } else {
+            # macOS
+            $lsofCmd = Get-Command lsof -ErrorAction SilentlyContinue
+            if ($lsofCmd) {
+                $raw = lsof -nP -iTCP -sTCP:LISTEN 2>$null
+                foreach ($line in $raw | Select-Object -Skip 1) {
+                    # COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
+                    $toks = ($line -split '\s+')
+                    if ($toks.Count -ge 9) {
+                        if ($toks[-1] -match ':(\d+)$') {
+                            $portMap[[int]$Matches[1]] = @{ pid = [int]$toks[1]; name = $toks[0] }
+                        }
+                    }
+                }
+            }
+        }
+
+        $results = @($Ports | ForEach-Object {
+            $p = $_
+            if ($portMap.ContainsKey($p)) {
+                @{ port = $p; listening = $true; pid = $portMap[$p].pid; process_name = $portMap[$p].name }
+            } else {
+                @{ port = $p; listening = $false; pid = $null; process_name = $null }
+            }
+        })
+        return @{ success = $true; ports = $results; platform = if ($IsLinux) { 'linux' } else { 'macos' } } | ConvertTo-Json -Compress -Depth 3
+    }
+
+    # Windows path
     $results = @($Ports | ForEach-Object {
         $port = $_
         $listening = $false
@@ -386,7 +524,7 @@ function Get-PSKitPortStatus {
         } catch {}
         @{ port = $port; listening = $listening; pid = $pid_; process_name = $procName }
     })
-    @{ success = $true; ports = $results } | ConvertTo-Json -Compress -Depth 3
+    @{ success = $true; ports = $results; platform = 'windows' } | ConvertTo-Json -Compress -Depth 3
 }
 
 function Invoke-PSKitHttpRequest {
@@ -443,17 +581,38 @@ function Get-PSKitProcessInfo {
         }
         $results = @($procs | ForEach-Object {
             $p = $_
+            # .Responding is Windows-only — guard it
+            $responding = $null
+            try { $responding = $p.Responding } catch { $responding = $null }
+            # .Threads on Linux pwsh can be a PSObject collection without .ThreadState
+            $threadCount = 0
+            try { $threadCount = $p.Threads.Count } catch { $threadCount = 0 }
+            # .StartTime on some Linux processes throws when not accessible
+            $startTime = $null
+            try { if ($p.StartTime) { $startTime = $p.StartTime.ToString("o") } } catch { $startTime = $null }
+
+            $cpu_s = $null
+            try { $cpu_s = [math]::Round($p.CPU, 2) } catch { $cpu_s = $null }
+            $memory_mb = $null
+            try { $memory_mb = [math]::Round($p.WorkingSet64 / 1MB, 2) } catch { $memory_mb = $null }
             $entry = @{
                 name = $p.Name
                 id = $p.Id
-                cpu_s = [math]::Round($p.CPU, 2)
-                memory_mb = [math]::Round($p.WorkingSet64 / 1MB, 2)
-                start_time = if ($p.StartTime) { $p.StartTime.ToString("o") } else { $null }
-                responding = $p.Responding
-                thread_count = $p.Threads.Count
+                cpu_s = $cpu_s
+                memory_mb = $memory_mb
+                start_time = $startTime
+                responding = $responding
+                thread_count = $threadCount
             }
-            if ($IncludeThreads) {
-                $entry['threads'] = @($p.Threads | ForEach-Object { @{ id = $_.Id; state = $_.ThreadState.ToString() } })
+            if ($IncludeThreads -and $threadCount -gt 0) {
+                $threadList = @()
+                foreach ($t in $p.Threads) {
+                    $tid = $null; $tstate = $null
+                    try { $tid = $t.Id } catch {}
+                    try { $tstate = $t.ThreadState.ToString() } catch {}
+                    $threadList += @{ id = $tid; state = $tstate }
+                }
+                $entry['threads'] = $threadList
             }
             $entry
         })
@@ -608,15 +767,25 @@ function Install-PSKitPackage {
     )
     $pkg = if ($Version) { "$Name==$Version" } else { $Name }
     if (-not $Manager) {
+        # Prefer language-native managers first (they install to user scope)
         if     (Get-Command pip   -EA SilentlyContinue) { $Manager = "pip" }
         elseif (Get-Command npm   -EA SilentlyContinue) { $Manager = "npm" }
         elseif (Get-Command cargo -EA SilentlyContinue) { $Manager = "cargo" }
+        elseif ($IsMacOS -and (Get-Command brew -EA SilentlyContinue))         { $Manager = "brew" }
+        elseif ($IsLinux -and (Get-Command apt-get -EA SilentlyContinue))      { $Manager = "apt" }
+        elseif ($IsLinux -and (Get-Command dnf -EA SilentlyContinue))          { $Manager = "dnf" }
+        elseif ($IsLinux -and (Get-Command pacman -EA SilentlyContinue))       { $Manager = "pacman" }
+        elseif (Get-Command winget -EA SilentlyContinue)                       { $Manager = "winget" }
         else   { return @{ success = $false; error = "No package manager found on PATH" } | ConvertTo-Json -Compress }
     }
     $cmd = switch ($Manager.ToLower()) {
         "pip"    { "pip install $pkg" }
         "npm"    { "npm install $Name" }
         "cargo"  { "cargo add $Name" }
+        "brew"   { "brew install $Name" }
+        "apt"    { "sudo apt-get install -y $Name" }
+        "dnf"    { "sudo dnf install -y $Name" }
+        "pacman" { "sudo pacman -S --noconfirm $Name" }
         "winget" { "winget install $Name" }
         default  { return @{ success = $false; error = "Unknown manager: $Manager" } | ConvertTo-Json -Compress }
     }
