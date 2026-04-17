@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import sys
 
-
 # ── Shared ────────────────────────────────────────────────────────────────────
 
 def _is_tty() -> bool:
@@ -41,13 +40,14 @@ _LOGO = r"""
 # ── Help ─────────────────────────────────────────────────────────────────────
 
 def _cmd_help() -> None:
-    from pskit import __version__
     import rich.box as box
     from rich.columns import Columns
     from rich.panel import Panel
     from rich.syntax import Syntax
     from rich.table import Table
     from rich.text import Text
+
+    from pskit import __version__
 
     con = _con()
     uni = _can_uni(con)
@@ -132,11 +132,12 @@ def _serve_stdio() -> None:
 
 def _startup_animation() -> None:
     import time
+
     import rich.box as box
-    from pskit import __version__
     from rich.panel import Panel
     from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
-    from rich.text import Text
+
+    from pskit import __version__
 
     con = _con(stderr=True)
     uni = _can_uni(con)
@@ -191,10 +192,12 @@ def _serve_http(port: int = 8000) -> None:
         sys.exit(1)
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
+
     from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
-    from pskit.server import mcp as _mcp_server
     from starlette.applications import Starlette
     from starlette.routing import Mount
+
+    from pskit.server import mcp as _mcp_server
     if _is_tty():
         _startup_animation()
     _app = _mcp_server._get_server()  # type: ignore[attr-defined]
@@ -258,7 +261,7 @@ def _cmd_doctor() -> None:
         base = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         try:
             urllib.request.urlopen(base + "/api/tags", timeout=1.5)
-            return "ok", f"running  ·  Tier 5 LLM review active"
+            return "ok", "running  ·  Tier 5 LLM review active"
         except Exception:
             return "warn", "not reachable  ·  Tier 5 disabled (fail-open)"
 
@@ -311,7 +314,6 @@ def _cmd_doctor() -> None:
     from rich.console import Console
     from rich.live import Live
     from rich.table import Table
-    from rich.text import Text
 
     con = Console(legacy_windows=False, highlight=False)
     uni = _can_uni(con)
@@ -431,10 +433,10 @@ def _cmd_audit() -> None:
     import rich.box as box
 
     try:
-        from rich.columns import Columns
-        from rich.panel import Panel
-        from rich.table import Table
-        from rich.text import Text
+        from rich.columns import Columns  # noqa: F401  availability probe
+        from rich.panel import Panel  # noqa: F401  availability probe
+        from rich.table import Table  # noqa: F401  availability probe
+        from rich.text import Text  # noqa: F401  availability probe
         _rich = True
     except ImportError:
         _rich = False
@@ -458,9 +460,7 @@ def _cmd_audit() -> None:
         return
 
     from rich.console import Console
-    from rich.panel import Panel
     from rich.table import Table
-    from rich.text import Text
 
     con = Console(legacy_windows=False, highlight=False)
     uni = _can_uni(con)

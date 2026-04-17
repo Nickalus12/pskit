@@ -7,7 +7,7 @@ import re
 import struct
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -526,7 +526,7 @@ class PSKitManager:
                     return candidate
             except (FileNotFoundError, OSError):
                 continue
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.debug("Timeout checking %s", candidate)
                 continue
 
@@ -572,7 +572,7 @@ class PSKitManager:
             "process": proc,
             "pipe": pipe_client,          # _NamedPipeClient | None
             "drain_task": drain_task,     # asyncio.Task | None
-            "created": datetime.now(timezone.utc),
+            "created": datetime.now(UTC),
             "command_count": 0,
             "last_command": None,
         }
@@ -631,7 +631,7 @@ class PSKitManager:
                         if not raw:
                             break
                         logger.debug("[Pipe] stderr: %r", raw.decode("utf-8", errors="replace").rstrip())
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
                 except Exception:
                     pass
@@ -641,7 +641,7 @@ class PSKitManager:
             stderr_drain = asyncio.create_task(_drain_stderr_init())
             try:
                 ready = await asyncio.wait_for(asyncio.shield(ready_task), timeout=15)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 ready_task.cancel()
                 logger.warning("[Pipe] Timed out waiting for PIPE_READY — falling back to stdin/stdout")
                 stderr_drain.cancel()
@@ -683,7 +683,7 @@ class PSKitManager:
         await proc.stdin.drain()
         try:
             await self._read_until_marker(proc, init_marker, timeout=15)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Session '%s' legacy init timed out, proceeding anyway", session_id
             )
@@ -745,7 +745,7 @@ class PSKitManager:
                 if not raw:
                     break
                 collected.append(raw.decode("utf-8", errors="replace").rstrip("\r\n"))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         return "\n".join(collected)
 
@@ -968,7 +968,7 @@ class PSKitManager:
                     "protocol": "stdin/stdout",
                 }
 
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "Command timed out after %ds in session '%s' — killing session",
                 timeout, session_id,
@@ -996,7 +996,7 @@ class PSKitManager:
             }
 
         session["command_count"] += 1
-        session["last_command"] = datetime.now(timezone.utc)
+        session["last_command"] = datetime.now(UTC)
 
         self._kan.record_outcome(
             script, result.get("success", False), kan_result.get("risk_level", "caution")
@@ -1009,8 +1009,8 @@ class PSKitManager:
             else:
                 self._result_cache.invalidate()
 
-        # Emit output size telemetry
-        output_bytes = len((result.get("output") or "").encode("utf-8"))
+        # Emit output size telemetry (reserved for future OTel metric)
+        _output_bytes = len((result.get("output") or "").encode("utf-8"))
         await self._log_command(script, result)
         return result
 
@@ -1030,7 +1030,7 @@ class PSKitManager:
             drain.cancel()
             try:
                 await asyncio.wait_for(asyncio.shield(drain), timeout=1)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (TimeoutError, asyncio.CancelledError):
                 pass
 
         proc: asyncio.subprocess.Process = session["process"]
@@ -1043,11 +1043,11 @@ class PSKitManager:
                     pass
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=5)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     proc.terminate()
                     try:
                         await asyncio.wait_for(proc.wait(), timeout=3)
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         proc.kill()
         except (ProcessLookupError, OSError) as exc:
             logger.debug("Process cleanup for session '%s': %s", session_id, exc)
@@ -1163,7 +1163,7 @@ class PSKitManager:
                 results[i] = await self.execute(script, session_id, timeout)
 
         session["command_count"] += len(approved_indices)
-        session["last_command"] = datetime.now(timezone.utc)
+        session["last_command"] = datetime.now(UTC)
         return [r or {} for r in results]
 
     async def _safety_check_only(self, script: str, session_id: str) -> dict | None:
